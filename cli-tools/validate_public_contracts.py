@@ -22,6 +22,7 @@ EXPECTED = {
     "fds_latest": "0.1.9",
     "home_env": "MIMOCODE_HOME",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
+    "config_file_env": "MIMOCODE_CONFIG",
 }
 SETUP_IDS = ["safe", "balanced", "full-auto"]
 SHARED_CI_COMMIT = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
@@ -164,6 +165,24 @@ def validate_versions(errors: list[str]) -> None:
             "package manager install must be null",
             errors,
         )
+    surfaces = baseline.get("native_surfaces")
+    require(isinstance(surfaces, dict), "baseline native surfaces missing", errors)
+    if isinstance(surfaces, dict):
+        require(
+            surfaces.get("config_root_env") == EXPECTED["home_env"],
+            "baseline config root env mismatch",
+            errors,
+        )
+        require(
+            surfaces.get("config_file_env") == EXPECTED["config_file_env"],
+            "baseline config file env mismatch",
+            errors,
+        )
+        require(
+            surfaces.get("config_dir_env") == EXPECTED["config_dir_env"],
+            "baseline config dir env mismatch",
+            errors,
+        )
     for owner, runtime in (
         ("manifest", manifest.get("runtime_compatibility")),
         ("contract", contract.get("runtime_compatibility")),
@@ -226,13 +245,14 @@ def validate_versions(errors: list[str]) -> None:
             errors,
         )
         require(
-            launch.get("config_environment_variable") == EXPECTED["config_dir_env"],
-            "runtime config dir env mismatch",
+            launch.get("config_environment_variable") == EXPECTED["config_file_env"],
+            "runtime config file env mismatch",
             errors,
         )
         require(
-            "MIMOCODE_CONFIG_DIR=<absolute-target>/config" in str(launch.get("direct_command")),
-            "runtime direct command must bind MIMOCODE_CONFIG_DIR",
+            "MIMOCODE_CONFIG=<absolute-target>/config/mimocode.json"
+            in str(launch.get("direct_command")),
+            "runtime direct command must bind MIMOCODE_CONFIG",
             errors,
         )
         require(

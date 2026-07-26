@@ -16,7 +16,7 @@ does not read or modify live MiMo Code authentication, cache, data, or state.
   <https://mimo.xiaomi.com/mimocode/config-overrides>, and
   <https://mimo.xiaomi.com/mimocode/permissions>
 
-The manager uses the documented `MIMOCODE_HOME`, `MIMOCODE_CONFIG_DIR`, and XDG
+The manager uses the documented `MIMOCODE_HOME`, `MIMOCODE_CONFIG`, and XDG
 environment variables for target isolation. The managed
 configuration uses the current `permission` field; deprecated permission
 aliases are not used.
@@ -66,7 +66,7 @@ Launch refuses documented permission-bypass and updater escape arguments
 permission policy and software updates stay bound to the managed target.
 
 The launched child receives isolated `HOME`, `USERPROFILE`, `MIMOCODE_HOME`,
-`MIMOCODE_CONFIG_DIR`, XDG directories, and temporary directory values under the
+`MIMOCODE_CONFIG`, XDG directories, and temporary directory values under the
 target. Provider tokens and MiMo Code credential environment variables are
 stripped.
 

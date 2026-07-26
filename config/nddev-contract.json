@@ -47,9 +47,9 @@
   },
   "runtime_launch": {
     "command": "<absolute-target>/bin/mimo",
-    "direct_command": "MIMOCODE_HOME=<absolute-target> MIMOCODE_CONFIG_DIR=<absolute-target>/config <absolute-target>/bin/mimo [args...]",
+    "direct_command": "MIMOCODE_HOME=<absolute-target> MIMOCODE_CONFIG=<absolute-target>/config/mimocode.json <absolute-target>/bin/mimo [args...]",
     "home_environment_variable": "MIMOCODE_HOME",
-    "config_environment_variable": "MIMOCODE_CONFIG_DIR",
+    "config_environment_variable": "MIMOCODE_CONFIG",
     "executable_source": "validated-target-owned-XiaomiMiMo-release-asset",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,

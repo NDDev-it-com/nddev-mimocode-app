@@ -98,6 +98,7 @@
   "native_surfaces": {
     "config_root_env": "MIMOCODE_HOME",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
+    "config_file_env": "MIMOCODE_CONFIG",
     "global_config_files": ["~/.config/mimocode/mimocode.jsonc", "~/.config/mimocode/mimocode.json"],
     "tui_config": "~/.config/mimocode/tui.json",
     "data": "~/.local/share/mimocode",
