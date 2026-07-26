@@ -3,6 +3,8 @@
   "product_name": "nddev-mimocode-app",
   "github_repository": "NDDev-it-com/nddev-mimocode-app",
   "license": "AGPL-3.0-or-later",
-  "status": "skeleton",
-  "harness_id": "mimocode"
+  "skeleton": {
+    "status": "skeleton",
+    "harness_id": "mimocode"
+  }
 }
