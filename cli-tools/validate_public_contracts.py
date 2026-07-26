@@ -75,7 +75,9 @@ def validate_versions(errors: list[str]) -> None:
     require(build.get("build_version") == version, "build version mismatch", errors)
     require(manifest.get("build_version") == version, "manifest version mismatch", errors)
     require(build.get("mimocode_tested") == EXPECTED["version"], "tested version mismatch", errors)
-    require(build.get("mimocode_release_tag") == EXPECTED["release_tag"], "release tag mismatch", errors)
+    require(
+        build.get("mimocode_release_tag") == EXPECTED["release_tag"], "release tag mismatch", errors
+    )
     require(
         build.get("mimocode_published_at") == EXPECTED["published_at"],
         "published_at mismatch",
@@ -83,7 +85,9 @@ def validate_versions(errors: list[str]) -> None:
     )
     require(build.get("command") == EXPECTED["command"], "command mismatch", errors)
     require(build.get("npm_package") == EXPECTED["npm_package"], "package mismatch", errors)
-    require(build.get("npm_integrity") == EXPECTED["npm_integrity"], "npm integrity mismatch", errors)
+    require(
+        build.get("npm_integrity") == EXPECTED["npm_integrity"], "npm integrity mismatch", errors
+    )
     release = baseline.get("release")
     npm = baseline.get("npm")
     install = baseline.get("install")
@@ -91,24 +95,56 @@ def validate_versions(errors: list[str]) -> None:
     require(isinstance(npm, dict), "baseline npm missing", errors)
     require(isinstance(install, dict), "baseline install missing", errors)
     if isinstance(release, dict):
-        require(release.get("version") == build.get("mimocode_tested"), "baseline release mismatch", errors)
-        require(release.get("tag") == build.get("mimocode_release_tag"), "baseline tag mismatch", errors)
-        require(release.get("published_at") == build.get("mimocode_published_at"), "baseline published_at mismatch", errors)
+        require(
+            release.get("version") == build.get("mimocode_tested"),
+            "baseline release mismatch",
+            errors,
+        )
+        require(
+            release.get("tag") == build.get("mimocode_release_tag"), "baseline tag mismatch", errors
+        )
+        require(
+            release.get("published_at") == build.get("mimocode_published_at"),
+            "baseline published_at mismatch",
+            errors,
+        )
     if isinstance(npm, dict):
         require(npm.get("package") == build.get("npm_package"), "baseline package mismatch", errors)
-        require(npm.get("version") == build.get("mimocode_tested"), "baseline package version mismatch", errors)
-        require(npm.get("integrity") == build.get("npm_integrity"), "baseline npm integrity mismatch", errors)
+        require(
+            npm.get("version") == build.get("mimocode_tested"),
+            "baseline package version mismatch",
+            errors,
+        )
+        require(
+            npm.get("integrity") == build.get("npm_integrity"),
+            "baseline npm integrity mismatch",
+            errors,
+        )
     if isinstance(install, dict):
-        require(install.get("fds_latest") == build.get("mimocode_tested"), "baseline FDS latest mismatch", errors)
+        require(
+            install.get("fds_latest") == build.get("mimocode_tested"),
+            "baseline FDS latest mismatch",
+            errors,
+        )
     for owner, runtime in (
         ("manifest", manifest.get("runtime_compatibility")),
         ("contract", contract.get("runtime_compatibility")),
     ):
         require(isinstance(runtime, dict), f"{owner} runtime_compatibility missing", errors)
         if isinstance(runtime, dict):
-            require(runtime.get("tested_version") == build.get("mimocode_tested"), f"{owner} tested version mismatch", errors)
-            require(runtime.get("npm_package") == build.get("npm_package"), f"{owner} package mismatch", errors)
-            require(runtime.get("command") == build.get("command"), f"{owner} command mismatch", errors)
+            require(
+                runtime.get("tested_version") == build.get("mimocode_tested"),
+                f"{owner} tested version mismatch",
+                errors,
+            )
+            require(
+                runtime.get("npm_package") == build.get("npm_package"),
+                f"{owner} package mismatch",
+                errors,
+            )
+            require(
+                runtime.get("command") == build.get("command"), f"{owner} command mismatch", errors
+            )
 
 
 def validate_assets(errors: list[str]) -> None:
@@ -156,20 +192,36 @@ def validate_setups(errors: list[str]) -> None:
         config = read_json(f"setups/{setup_id}/mimocode.json")
         require(metadata.get("id") == setup_id, f"{setup_id} id mismatch", errors)
         require(metadata.get("launch_args") == [], f"{setup_id} launch args mismatch", errors)
-        require(metadata.get("builder_default_on") is True, f"{setup_id} builder not default-on", errors)
+        require(
+            metadata.get("builder_default_on") is True, f"{setup_id} builder not default-on", errors
+        )
         require(
             metadata.get("builder_projection") == "native-config-skills-agents-instructions",
             f"{setup_id} builder projection mismatch",
             errors,
         )
-        require(config.get("$schema") == "https://mimo.xiaomi.com/mimocode/config.json", f"{setup_id} schema mismatch", errors)
-        require(config.get("autoupdate") is False, f"{setup_id} autoupdate must be disabled", errors)
+        require(
+            config.get("$schema") == "https://mimo.xiaomi.com/mimocode/config.json",
+            f"{setup_id} schema mismatch",
+            errors,
+        )
+        require(
+            config.get("autoupdate") is False, f"{setup_id} autoupdate must be disabled", errors
+        )
         require(config.get("share") == "disabled", f"{setup_id} share must be disabled", errors)
         require("tools" not in config, f"{setup_id} must not use deprecated tools config", errors)
         require(config.get("plugin") == [], f"{setup_id} marketplace/plugins must be empty", errors)
         require(config.get("mcp") == {}, f"{setup_id} must not start MCP servers", errors)
-        require(config.get("skills") == {"paths": ["./skills"]}, f"{setup_id} skills path mismatch", errors)
-        require(config.get("instructions") == ["./AGENTS.md", "./instructions/nddev-builder.md"], f"{setup_id} instructions mismatch", errors)
+        require(
+            config.get("skills") == {"paths": ["./skills"]},
+            f"{setup_id} skills path mismatch",
+            errors,
+        )
+        require(
+            config.get("instructions") == ["./AGENTS.md", "./instructions/nddev-builder.md"],
+            f"{setup_id} instructions mismatch",
+            errors,
+        )
         permission = config.get("permission")
         require(isinstance(permission, dict), f"{setup_id} permission missing", errors)
         if isinstance(permission, dict):
@@ -177,15 +229,27 @@ def validate_setups(errors: list[str]) -> None:
             skill = permission.get("skill")
             require(isinstance(skill, dict), f"{setup_id} skill permission missing", errors)
             if isinstance(skill, dict):
-                require(skill.get("nddev-builder") == "allow", f"{setup_id} builder skill not allowed", errors)
+                require(
+                    skill.get("nddev-builder") == "allow",
+                    f"{setup_id} builder skill not allowed",
+                    errors,
+                )
         agent = config.get("agent")
         require(isinstance(agent, dict), f"{setup_id} agents missing", errors)
         if isinstance(agent, dict):
             builder = agent.get("nddev-builder")
             require(isinstance(builder, dict), f"{setup_id} builder agent missing", errors)
             if isinstance(builder, dict):
-                require(builder.get("mode") == "subagent", f"{setup_id} builder agent mode mismatch", errors)
-                require(builder.get("prompt") == "{file:./instructions/nddev-builder.md}", f"{setup_id} builder prompt mismatch", errors)
+                require(
+                    builder.get("mode") == "subagent",
+                    f"{setup_id} builder agent mode mismatch",
+                    errors,
+                )
+                require(
+                    builder.get("prompt") == "{file:./instructions/nddev-builder.md}",
+                    f"{setup_id} builder prompt mismatch",
+                    errors,
+                )
 
 
 def validate_builder(errors: list[str]) -> None:
@@ -206,7 +270,11 @@ def validate_builder(errors: list[str]) -> None:
         )
         require(builder.get("default_on") is True, "builder default_on mismatch", errors)
         require(builder.get("marketplace") is None, "builder marketplace must be null", errors)
-        require(builder.get("version") == build.get("nddev_builder_extension_version"), "builder version mismatch", errors)
+        require(
+            builder.get("version") == build.get("nddev_builder_extension_version"),
+            "builder version mismatch",
+            errors,
+        )
     skill_text = skill.read_text(encoding="utf-8") if skill.is_file() else ""
     require("name: nddev-builder" in skill_text, "builder skill name missing", errors)
 
@@ -217,7 +285,11 @@ def validate_absence_of_stale_terms(errors: list[str]) -> None:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
         for marker in (PLACEHOLDER_MARKER, *RETIRED_MARKERS):
-            require(marker not in text, f"retired marker {marker!r} found in {path.relative_to(ROOT)}", errors)
+            require(
+                marker not in text,
+                f"retired marker {marker!r} found in {path.relative_to(ROOT)}",
+                errors,
+            )
 
 
 def validate_shared_ci(errors: list[str]) -> None:
