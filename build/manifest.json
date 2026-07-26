@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "name": "nddev-mimocode-app",
+  "build_version": "0.1.0",
+  "entrypoint": "python3 cli-tools/nddev_mimocode.py",
+  "source_root": "setups",
+  "setup_ids": ["safe", "balanced", "full-auto"],
+  "managed_files": [
+    "config/mimocode.json",
+    "config/AGENTS.md",
+    "config/skills/nddev-builder/SKILL.md",
+    "config/agents/nddev-builder.md",
+    "config/instructions/nddev-builder.md",
+    "NDDEV-MIMOCODE-SETUP.json"
+  ],
+  "permission_policy": {
+    "configuration_surface": "mimocode.json permission rules plus documented MiMo Code agents",
+    "setups": {
+      "safe": {
+        "default_agent": "plan",
+        "permission": {
+          "*": "ask",
+          "read": "allow",
+          "grep": "allow",
+          "glob": "allow",
+          "edit": "deny",
+          "bash": "deny"
+        }
+      },
+      "balanced": {
+        "default_agent": "build",
+        "permission": {
+          "*": "ask",
+          "read": "allow",
+          "grep": "allow",
+          "glob": "allow",
+          "edit": "ask",
+          "bash": {
+            "*": "ask",
+            "git status*": "allow",
+            "git diff*": "allow",
+            "git log*": "allow"
+          }
+        }
+      },
+      "full-auto": {
+        "default_agent": "build",
+        "permission": {
+          "*": "allow",
+          "bash": {
+            "*": "allow",
+            "rm -rf *": "deny",
+            "sudo *": "deny",
+            "git push *": "ask"
+          }
+        }
+      }
+    },
+    "source": "setups/<id>/mimocode.json and setups/<id>/setup.json"
+  },
+  "builder_capability": {
+    "projection": "mimocode-native-config-skills-agents-instructions",
+    "source_root": "plugins/nddev-builder",
+    "native_paths": ["skills", "agents", "instructions", "mimocode.json"],
+    "default_on": true,
+    "marketplace": null
+  },
+  "runtime_compatibility": {
+    "baseline_ref": "references/mimocode-baseline.json",
+    "version_ref": "build/version.json",
+    "tested_version": "0.1.9",
+    "npm_package": "@mimo-ai/cli",
+    "command": "mimo"
+  }
+}

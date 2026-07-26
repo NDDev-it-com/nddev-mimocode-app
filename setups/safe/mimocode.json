@@ -1,0 +1,69 @@
+{
+  "$schema": "https://mimo.xiaomi.com/mimocode/config.json",
+  "agent": {
+    "nddev-builder": {
+      "description": "Review and maintain NDDev native MiMo Code setup artifacts.",
+      "mode": "subagent",
+      "permission": {
+        "*": "ask",
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "read": "allow",
+        "skill": {
+          "*": "allow",
+          "nddev-builder": "allow"
+        }
+      },
+      "prompt": "{file:./instructions/nddev-builder.md}"
+    },
+    "plan": {
+      "description": "Plan-only default agent for safe setup work.",
+      "mode": "primary",
+      "permission": {
+        "*": "ask",
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "read": "allow",
+        "skill": {
+          "*": "allow",
+          "nddev-builder": "allow"
+        }
+      }
+    }
+  },
+  "autoupdate": false,
+  "compaction": {
+    "disabled": true
+  },
+  "default_agent": "plan",
+  "disabled_providers": [],
+  "instructions": ["./AGENTS.md", "./instructions/nddev-builder.md"],
+  "mcp": {},
+  "permission": {
+    "*": "ask",
+    "bash": "deny",
+    "edit": "deny",
+    "glob": "allow",
+    "grep": "allow",
+    "read": "allow",
+    "skill": {
+      "*": "allow",
+      "nddev-builder": "allow"
+    }
+  },
+  "plugin": [],
+  "share": "disabled",
+  "skills": {
+    "paths": ["./skills"]
+  },
+  "snapshot": {
+    "enabled": false
+  },
+  "watcher": {
+    "enabled": false
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-26",
+  "product": "MiMo Code",
+  "command": "mimo",
+  "npm": {
+    "package": "@mimo-ai/cli",
+    "version": "0.1.9",
+    "integrity": "sha512-YFqiotp1sHDmj2BOiw2AbgCY2zm+c7Z36lh5JNL6KACEvYgerB5kqqldqcy/xI4Erry501DsTN1YPxo2mw6fAQ==",
+    "tarball": "https://registry.npmjs.org/@mimo-ai/cli/-/cli-0.1.9.tgz"
+  },
+  "install": {
+    "script": "https://mimo.xiaomi.com/install",
+    "windows_script": "https://mimo.xiaomi.com/install.ps1",
+    "fds_latest_url": "https://mimocode.cnbj1.mi-fds.com/mimocode/mimocode/releases/latest",
+    "fds_latest": "0.1.9"
+  },
+  "release": {
+    "repository": "XiaomiMiMo/MiMo-Code",
+    "tag": "v0.1.9",
+    "version": "0.1.9",
+    "published_at": "2026-07-24T06:06:13Z",
+    "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
+    "assets": {
+      "darwin-arm64": {
+        "name": "mimocode-darwin-arm64.zip",
+        "size": 32411159,
+        "sha256": "a46f1fc7f2a770d84ff5a3a731bc86ec54a3aa40ce22efd71e3c114f2b42ef83",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-arm64.zip"
+      },
+      "darwin-x64-baseline": {
+        "name": "mimocode-darwin-x64-baseline.zip",
+        "size": 34781456,
+        "sha256": "fdf326bf8d8d9b4a5e524e0d15f17e8f894b0d0d278287d0c20de646f52184b1",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64-baseline.zip"
+      },
+      "darwin-x64": {
+        "name": "mimocode-darwin-x64.zip",
+        "size": 34787169,
+        "sha256": "710618322abeb01a2b1130c6099fe7ff68b3efc4da19545817926b22afcc5f10",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64.zip"
+      },
+      "linux-arm64-musl": {
+        "name": "mimocode-linux-arm64-musl.tar.gz",
+        "size": 43519901,
+        "sha256": "aa3290ee7977ac295a4912344e564bda3d1806244a372f3822890bd2dc922d15",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-arm64-musl.tar.gz"
+      },
+      "linux-arm64": {
+        "name": "mimocode-linux-arm64.tar.gz",
+        "size": 44914006,
+        "sha256": "801bb33a18c66bfffaf342735780bb2635f419044003550d0e167eaf776e0db0",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-arm64.tar.gz"
+      },
+      "linux-x64-baseline-musl": {
+        "name": "mimocode-linux-x64-baseline-musl.tar.gz",
+        "size": 43661067,
+        "sha256": "2fd48541f6d3c3df5ef48096fbe376535b44c89554ecabf4041f52a5e6ff78b4",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64-baseline-musl.tar.gz"
+      },
+      "linux-x64-baseline": {
+        "name": "mimocode-linux-x64-baseline.tar.gz",
+        "size": 44875105,
+        "sha256": "104b736967db1772ccc12648c6b2b7e8bf05862794f254c70a23d950d5278081",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64-baseline.tar.gz"
+      },
+      "linux-x64-musl": {
+        "name": "mimocode-linux-x64-musl.tar.gz",
+        "size": 43947655,
+        "sha256": "cb5a4e799bb6b0dfa425cf4c757c644c02bc9487e4c8c33733a6bb19a9167762",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64-musl.tar.gz"
+      },
+      "linux-x64": {
+        "name": "mimocode-linux-x64.tar.gz",
+        "size": 45247960,
+        "sha256": "99ade0a26235d80db7bb6ac0319b0f6508dfe684e2cfab7a00801ad6aa2ac673",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64.tar.gz"
+      },
+      "windows-arm64": {
+        "name": "mimocode-windows-arm64.zip",
+        "size": 45013275,
+        "sha256": "35f6261707861f463948186f9cc40bb3bc6dd955563ea87858a5247f741edf47",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-windows-arm64.zip"
+      },
+      "windows-x64-baseline": {
+        "name": "mimocode-windows-x64-baseline.zip",
+        "size": 46420456,
+        "sha256": "49d43de637054ec8cd069a73b1e4ca0f980e84b5ac65a04f1dad104f10ceb8fd",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-windows-x64-baseline.zip"
+      },
+      "windows-x64": {
+        "name": "mimocode-windows-x64.zip",
+        "size": 46757202,
+        "sha256": "514b60dfd3b2d9ee8f6c3fb852398bbd2101f9b58f0ab271d8edb3acaa4375d4",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-windows-x64.zip"
+      }
+    }
+  },
+  "native_surfaces": {
+    "config_root_env": "MIMOCODE_HOME",
+    "config_file_env": "MIMOCODE_CONFIG",
+    "config_dir_env": "MIMOCODE_CONFIG_DIR",
+    "global_config_files": ["config.json", "mimocode.json", "mimocode.jsonc"],
+    "schema": "https://mimo.xiaomi.com/mimocode/config.json",
+    "permission_field": "permission",
+    "global_rules": "config/AGENTS.md",
+    "skills": "config/skills/**/SKILL.md",
+    "agents": "config/agents/*.md",
+    "marketplace": null
+  },
+  "sources": [
+    "https://mimo.xiaomi.com/mimocode/install",
+    "https://mimo.xiaomi.com/mimocode/config-overrides",
+    "https://mimo.xiaomi.com/mimocode/config-files",
+    "https://mimo.xiaomi.com/mimocode/permissions",
+    "https://mimo.xiaomi.com/mimocode/skills",
+    "https://mimo.xiaomi.com/mimocode/agents",
+    "https://mimo.xiaomi.com/mimocode/cli-options",
+    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
+    "https://registry.npmjs.org/@mimo-ai/cli"
+  ]
+}

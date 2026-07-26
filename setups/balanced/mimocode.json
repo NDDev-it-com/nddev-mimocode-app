@@ -1,0 +1,83 @@
+{
+  "$schema": "https://mimo.xiaomi.com/mimocode/config.json",
+  "agent": {
+    "build": {
+      "description": "Default interactive implementation agent with NDDev safety boundaries.",
+      "mode": "primary",
+      "permission": {
+        "*": "ask",
+        "bash": {
+          "*": "ask",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git status*": "allow"
+        },
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "read": "allow",
+        "skill": {
+          "*": "allow",
+          "nddev-builder": "allow"
+        }
+      }
+    },
+    "nddev-builder": {
+      "description": "Review and maintain NDDev native MiMo Code setup artifacts.",
+      "mode": "subagent",
+      "permission": {
+        "*": "ask",
+        "bash": {
+          "*": "ask",
+          "git diff*": "allow",
+          "git status*": "allow"
+        },
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "read": "allow",
+        "skill": {
+          "*": "allow",
+          "nddev-builder": "allow"
+        }
+      },
+      "prompt": "{file:./instructions/nddev-builder.md}"
+    }
+  },
+  "autoupdate": false,
+  "compaction": {
+    "disabled": true
+  },
+  "default_agent": "build",
+  "disabled_providers": [],
+  "instructions": ["./AGENTS.md", "./instructions/nddev-builder.md"],
+  "mcp": {},
+  "permission": {
+    "*": "ask",
+    "bash": {
+      "*": "ask",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git status*": "allow"
+    },
+    "edit": "ask",
+    "glob": "allow",
+    "grep": "allow",
+    "read": "allow",
+    "skill": {
+      "*": "allow",
+      "nddev-builder": "allow"
+    }
+  },
+  "plugin": [],
+  "share": "disabled",
+  "skills": {
+    "paths": ["./skills"]
+  },
+  "snapshot": {
+    "enabled": false
+  },
+  "watcher": {
+    "enabled": false
+  }
+}

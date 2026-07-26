@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "full-auto",
+  "description": "Autonomous MiMo Code profile: most tool use is allowed by config, while destructive shell and publish operations stay explicitly constrained.",
+  "managed_files": ["config/mimocode.json", "config/AGENTS.md"],
+  "builder_projection": "native-config-skills-agents-instructions",
+  "builder_default_on": true,
+  "launch_args": []
+}

@@ -1,10 +1,100 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "product_name": "nddev-mimocode-app",
   "github_repository": "NDDev-it-com/nddev-mimocode-app",
   "license": "AGPL-3.0-or-later",
-  "skeleton": {
-    "status": "skeleton",
-    "harness_id": "mimocode"
+  "setup_system": {
+    "manager": "cli-tools/nddev_mimocode.py",
+    "setup_ids": ["safe", "balanced", "full-auto"],
+    "explicit_absolute_target_required": true,
+    "builder_default_on": true,
+    "lifecycle": ["list", "status", "plan", "install", "switch", "restore", "remove", "software-status", "install-cli", "update-cli", "launch"]
+  },
+  "runtime_compatibility": {
+    "baseline_ref": "references/mimocode-baseline.json",
+    "version_ref": "build/version.json",
+    "tested_version": "0.1.9",
+    "release_tag": "v0.1.9",
+    "npm_package": "@mimo-ai/cli",
+    "command": "mimo",
+    "install_script": "https://mimo.xiaomi.com/install",
+    "documentation": [
+      "https://mimo.xiaomi.com/mimocode/install",
+      "https://mimo.xiaomi.com/mimocode/config-overrides",
+      "https://mimo.xiaomi.com/mimocode/config-files",
+      "https://mimo.xiaomi.com/mimocode/permissions",
+      "https://mimo.xiaomi.com/mimocode/skills",
+      "https://mimo.xiaomi.com/mimocode/agents",
+      "https://mimo.xiaomi.com/mimocode/cli-options",
+      "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9"
+    ]
+  },
+  "builder_capability": {
+    "projection": "mimocode-native-config-skills-agents-instructions",
+    "source_root": "plugins/nddev-builder",
+    "version": "0.1.0",
+    "native_paths": [
+      "config/mimocode.json",
+      "config/AGENTS.md",
+      "config/skills/nddev-builder/SKILL.md",
+      "config/agents/nddev-builder.md",
+      "config/instructions/nddev-builder.md"
+    ],
+    "default_on": true,
+    "marketplace": null,
+    "marketplace_reason": "No official MiMo Code marketplace contract was found; the module uses documented native config, skills, agents, and instruction surfaces only."
+  },
+  "runtime_launch": {
+    "command": "<absolute-target>/bin/mimo",
+    "direct_command": "MIMOCODE_HOME=<absolute-target> MIMOCODE_CONFIG=<absolute-target>/config/mimocode.json <absolute-target>/bin/mimo [args...]",
+    "home_environment_variable": "MIMOCODE_HOME",
+    "config_environment_variable": "MIMOCODE_CONFIG",
+    "executable_source": "validated-target-owned-XiaomiMiMo-release-asset",
+    "forwards_arguments": true,
+    "forwards_child_exit_code": true,
+    "json_manager_errors_supported": true,
+    "manager_command": "python3 cli-tools/nddev_mimocode.py launch --target <absolute-target> -- [args...]",
+    "requires_clean_managed_target": true,
+    "streams_child_stdio": true,
+    "successful_child_output_wrapped": false,
+    "environment_scope": "child-process-only",
+    "token_environment_inheritance": "stripped"
+  },
+  "command_policy": {
+    "json_supported": ["list", "status", "plan", "install", "switch", "restore", "remove", "software-status", "install-cli", "update-cli"],
+    "target_required": ["status", "plan", "install", "switch", "restore", "remove", "software-status", "install-cli", "update-cli", "launch"],
+    "plan_mutates": false,
+    "restore_backup_option": "--backup <0..9>"
+  },
+  "transaction_policy": {
+    "managed_file_mode": "0600",
+    "managed_directory_mode": "0700",
+    "new_target_mode": "0700",
+    "lock": "exclusive sibling directory",
+    "preserve_unmanaged_files": true,
+    "preserve_unmanaged_config_keys": true,
+    "reject_symlink_targets": true,
+    "reject_symlink_managed_files": true,
+    "reject_hardlink_managed_files": true,
+    "bounded_reads": true,
+    "rollback_on_failure": true,
+    "target_bound_backups": true,
+    "backup_slots": 10
+  },
+  "software_install": {
+    "tested_version": "0.1.9",
+    "source": "official XiaomiMiMo/MiMo-Code release assets with SHA-256 digests",
+    "npm_package": "@mimo-ai/cli",
+    "npm_integrity": "sha512-YFqiotp1sHDmj2BOiw2AbgCY2zm+c7Z36lh5JNL6KACEvYgerB5kqqldqcy/xI4Erry501DsTN1YPxo2mw6fAQ==",
+    "supported_platforms": ["macos", "linux", "windows"],
+    "layout": {
+      "visible_command": "bin/mimo",
+      "software_manifest": "software/mimocode.json"
+    },
+    "commands": {
+      "status": "python3 cli-tools/nddev_mimocode.py software-status --target <absolute-target> [--json]",
+      "install": "python3 cli-tools/nddev_mimocode.py install-cli --target <absolute-target> [--json]",
+      "update": "python3 cli-tools/nddev_mimocode.py update-cli --target <absolute-target> [--json]"
+    }
   }
 }

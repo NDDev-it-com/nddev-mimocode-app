@@ -1,4 +1,12 @@
 {
-  "schema_version": 1,
-  "build_version": "0.0.0"
+  "schema_version": 2,
+  "build_version": "0.1.0",
+  "mimocode_tested": "0.1.9",
+  "mimocode_release_tag": "v0.1.9",
+  "mimocode_published_at": "2026-07-24T06:06:13Z",
+  "command": "mimo",
+  "npm_package": "@mimo-ai/cli",
+  "npm_integrity": "sha512-YFqiotp1sHDmj2BOiw2AbgCY2zm+c7Z36lh5JNL6KACEvYgerB5kqqldqcy/xI4Erry501DsTN1YPxo2mw6fAQ==",
+  "nddev_builder_extension_version": "0.1.0",
+  "runtime_baseline_ref": "references/mimocode-baseline.json"
 }
