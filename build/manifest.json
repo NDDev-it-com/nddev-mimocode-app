@@ -11,6 +11,7 @@
     "config/skills/nddev-builder/SKILL.md",
     "config/agents/nddev-builder.md",
     "config/instructions/nddev-builder.md",
+    ".mimocode/workflows/nddev-builder.js",
     "NDDEV-MIMOCODE-SETUP.json"
   ],
   "permission_policy": {
@@ -59,9 +60,9 @@
     "source": "setups/<id>/mimocode.json and setups/<id>/setup.json"
   },
   "builder_capability": {
-    "projection": "mimocode-native-config-skills-agents-instructions",
+    "projection": "mimocode-native-config-skills-agents-instructions-workflows",
     "source_root": "plugins/nddev-builder",
-    "native_paths": ["skills", "agents", "instructions", "mimocode.json"],
+    "native_paths": ["skills", "agents", "instructions", "workflows", "mimocode.json"],
     "default_on": true,
     "marketplace": null
   },
@@ -69,7 +70,9 @@
     "baseline_ref": "references/mimocode-baseline.json",
     "version_ref": "build/version.json",
     "tested_version": "0.1.9",
-    "npm_package": "@mimo-ai/cli",
+    "official_repository": "XiaomiMiMo/MiMo-Code",
+    "official_installer": "https://mimo.xiaomi.com/install",
+    "official_installer_size": 15819,
     "command": "mimo"
   }
 }

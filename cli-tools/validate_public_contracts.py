@@ -15,9 +15,13 @@ EXPECTED = {
     "release_tag": "v0.1.9",
     "published_at": "2026-07-24T06:06:13Z",
     "command": "mimo",
-    "npm_package": "@mimo-ai/cli",
-    "npm_integrity": "sha512-YFqiotp1sHDmj2BOiw2AbgCY2zm+c7Z36lh5JNL6KACEvYgerB5kqqldqcy/xI4Erry501DsTN1YPxo2mw6fAQ==",
+    "official_repository": "XiaomiMiMo/MiMo-Code",
+    "official_installer": "https://mimo.xiaomi.com/install",
+    "official_installer_size": 15819,
+    "official_installer_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
     "fds_latest": "0.1.9",
+    "home_env": "MIMOCODE_HOME",
+    "config_dir_env": "MIMOCODE_CONFIG_DIR",
 }
 SETUP_IDS = ["safe", "balanced", "full-auto"]
 SHARED_CI_COMMIT = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
@@ -45,7 +49,20 @@ ASSET_DIGESTS = {
     "windows-x64-baseline": "49d43de637054ec8cd069a73b1e4ca0f980e84b5ac65a04f1dad104f10ceb8fd",
     "windows-x64": "514b60dfd3b2d9ee8f6c3fb852398bbd2101f9b58f0ab271d8edb3acaa4375d4",
 }
-PLACEHOLDER_MARKER = "skele" + "ton"
+ASSET_SIZES = {
+    "darwin-arm64": 32411159,
+    "darwin-x64-baseline": 34781456,
+    "darwin-x64": 34787169,
+    "linux-arm64-musl": 43519901,
+    "linux-arm64": 44914006,
+    "linux-x64-baseline-musl": 43661067,
+    "linux-x64-baseline": 44875105,
+    "linux-x64-musl": 43947655,
+    "linux-x64": 45247960,
+    "windows-arm64": 45013275,
+    "windows-x64-baseline": 46420456,
+    "windows-x64": 46757202,
+}
 
 
 def read_json(relative: str) -> dict[str, Any]:
@@ -67,7 +84,7 @@ def validate_versions(errors: list[str]) -> None:
     contract = read_json("config/nddev-contract.json")
     baseline = read_json("references/mimocode-baseline.json")
     require(SEMVER.fullmatch(version) is not None, "VERSION is not SemVer", errors)
-    require(version != "0.0.0", "VERSION must not be placeholder 0.0.0", errors)
+    require(version != "0.0.0", "VERSION must not be 0.0.0", errors)
     require(build.get("schema_version") == 2, "build schema mismatch", errors)
     require(manifest.get("schema_version") == 2, "manifest schema mismatch", errors)
     require(contract.get("contract_version") == 2, "contract version mismatch", errors)
@@ -83,15 +100,29 @@ def validate_versions(errors: list[str]) -> None:
         errors,
     )
     require(build.get("command") == EXPECTED["command"], "command mismatch", errors)
-    require(build.get("npm_package") == EXPECTED["npm_package"], "package mismatch", errors)
     require(
-        build.get("npm_integrity") == EXPECTED["npm_integrity"], "npm integrity mismatch", errors
+        build.get("official_repository") == EXPECTED["official_repository"],
+        "repository mismatch",
+        errors,
+    )
+    require(
+        build.get("official_installer") == EXPECTED["official_installer"],
+        "installer URL mismatch",
+        errors,
+    )
+    require(
+        build.get("official_installer_size") == EXPECTED["official_installer_size"],
+        "installer size mismatch",
+        errors,
+    )
+    require(
+        build.get("official_installer_sha256") == EXPECTED["official_installer_sha256"],
+        "installer SHA-256 mismatch",
+        errors,
     )
     release = baseline.get("release")
-    npm = baseline.get("npm")
     install = baseline.get("install")
     require(isinstance(release, dict), "baseline release missing", errors)
-    require(isinstance(npm, dict), "baseline npm missing", errors)
     require(isinstance(install, dict), "baseline install missing", errors)
     if isinstance(release, dict):
         require(
@@ -107,22 +138,30 @@ def validate_versions(errors: list[str]) -> None:
             "baseline published_at mismatch",
             errors,
         )
-    if isinstance(npm, dict):
-        require(npm.get("package") == build.get("npm_package"), "baseline package mismatch", errors)
-        require(
-            npm.get("version") == build.get("mimocode_tested"),
-            "baseline package version mismatch",
-            errors,
-        )
-        require(
-            npm.get("integrity") == build.get("npm_integrity"),
-            "baseline npm integrity mismatch",
-            errors,
-        )
     if isinstance(install, dict):
         require(
             install.get("fds_latest") == build.get("mimocode_tested"),
             "baseline FDS latest mismatch",
+            errors,
+        )
+        require(
+            install.get("script") == EXPECTED["official_installer"],
+            "baseline installer URL mismatch",
+            errors,
+        )
+        require(
+            install.get("script_size") == EXPECTED["official_installer_size"],
+            "baseline installer size mismatch",
+            errors,
+        )
+        require(
+            install.get("script_sha256") == EXPECTED["official_installer_sha256"],
+            "baseline installer SHA-256 mismatch",
+            errors,
+        )
+        require(
+            install.get("package_manager_install") is None,
+            "package manager install must be null",
             errors,
         )
     for owner, runtime in (
@@ -137,13 +176,71 @@ def validate_versions(errors: list[str]) -> None:
                 errors,
             )
             require(
-                runtime.get("npm_package") == build.get("npm_package"),
-                f"{owner} package mismatch",
+                runtime.get("official_repository") == build.get("official_repository"),
+                f"{owner} repository mismatch",
                 errors,
             )
             require(
                 runtime.get("command") == build.get("command"), f"{owner} command mismatch", errors
             )
+    software = contract.get("software_install")
+    require(isinstance(software, dict), "contract software_install missing", errors)
+    if isinstance(software, dict):
+        require(
+            software.get("tested_version") == build.get("mimocode_tested"),
+            "software tested version mismatch",
+            errors,
+        )
+        require(
+            software.get("official_installer") == EXPECTED["official_installer"],
+            "software installer URL mismatch",
+            errors,
+        )
+        require(
+            software.get("official_installer_size") == EXPECTED["official_installer_size"],
+            "software installer size mismatch",
+            errors,
+        )
+        require(
+            software.get("official_installer_sha256") == EXPECTED["official_installer_sha256"],
+            "software installer SHA-256 mismatch",
+            errors,
+        )
+        require(
+            software.get("package_manager_install") is None,
+            "software package manager install must be null",
+            errors,
+        )
+        require(
+            software.get("installer_flags")
+            == ["--version", "0.1.9", "--no-modify-path", "--binary", "<verified-binary>"],
+            "software installer flags mismatch",
+            errors,
+        )
+    launch = contract.get("runtime_launch")
+    require(isinstance(launch, dict), "contract runtime_launch missing", errors)
+    if isinstance(launch, dict):
+        require(
+            launch.get("home_environment_variable") == EXPECTED["home_env"],
+            "runtime home env mismatch",
+            errors,
+        )
+        require(
+            launch.get("config_environment_variable") == EXPECTED["config_dir_env"],
+            "runtime config dir env mismatch",
+            errors,
+        )
+        require(
+            "MIMOCODE_CONFIG_DIR=<absolute-target>/config" in str(launch.get("direct_command")),
+            "runtime direct command must bind MIMOCODE_CONFIG_DIR",
+            errors,
+        )
+        require(
+            launch.get("blocked_launch_args")
+            == ["--dangerously-skip-permissions", "--never-ask", "--trust", "upgrade"],
+            "runtime launch guard mismatch",
+            errors,
+        )
 
 
 def validate_assets(errors: list[str]) -> None:
@@ -156,6 +253,11 @@ def validate_assets(errors: list[str]) -> None:
             require(isinstance(asset, dict), f"asset missing: {key}", errors)
             if isinstance(asset, dict):
                 require(asset.get("sha256") == digest, f"asset digest mismatch: {key}", errors)
+                require(
+                    asset.get("size") == ASSET_SIZES[key],
+                    f"asset size mismatch: {key}",
+                    errors,
+                )
                 require(
                     str(asset.get("url", "")).startswith(
                         "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/"
@@ -195,7 +297,8 @@ def validate_setups(errors: list[str]) -> None:
             metadata.get("builder_default_on") is True, f"{setup_id} builder not default-on", errors
         )
         require(
-            metadata.get("builder_projection") == "native-config-skills-agents-instructions",
+            metadata.get("builder_projection")
+            == "native-config-skills-agents-instructions-workflows",
             f"{setup_id} builder projection mismatch",
             errors,
         )
@@ -257,13 +360,15 @@ def validate_builder(errors: list[str]) -> None:
     skill = ROOT / "plugins" / "nddev-builder" / "skills" / "nddev-builder" / "SKILL.md"
     agent = ROOT / "plugins" / "nddev-builder" / "agents" / "nddev-builder.md"
     instructions = ROOT / "plugins" / "nddev-builder" / "instructions" / "nddev-builder.md"
-    for path in (skill, agent, instructions):
+    workflow = ROOT / "plugins" / "nddev-builder" / "workflows" / "nddev-builder.js"
+    for path in (skill, agent, instructions, workflow):
         require(path.is_file(), f"builder native file missing: {path.relative_to(ROOT)}", errors)
     builder = contract.get("builder_capability")
     require(isinstance(builder, dict), "contract builder missing", errors)
     if isinstance(builder, dict):
         require(
-            builder.get("projection") == "mimocode-native-config-skills-agents-instructions",
+            builder.get("projection")
+            == "mimocode-native-config-skills-agents-instructions-workflows",
             "builder projection mismatch",
             errors,
         )
@@ -278,16 +383,16 @@ def validate_builder(errors: list[str]) -> None:
     require("name: nddev-builder" in skill_text, "builder skill name missing", errors)
 
 
-def validate_public_tree(errors: list[str]) -> None:
-    for path in ROOT.rglob("*"):
-        if ".git" in path.parts or path.is_dir():
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        require(
-            PLACEHOLDER_MARKER not in text,
-            f"placeholder marker found in {path.relative_to(ROOT)}",
-            errors,
-        )
+def validate_public_identity(errors: list[str]) -> None:
+    combined = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in ROOT.rglob("*")
+        if path.is_file() and ".git" not in path.parts and "__pycache__" not in path.parts
+    )
+    require("MiMo Code" in combined, "current product name missing", errors)
+    require("MiMoCode" in combined, "current product spelling missing", errors)
+    require("XiaomiMiMo/MiMo-Code" in combined, "current repository identity missing", errors)
+    require("mimo" in combined, "current command identity missing", errors)
 
 
 def validate_shared_ci(errors: list[str]) -> None:
@@ -309,7 +414,7 @@ def main() -> int:
     validate_assets(errors)
     validate_setups(errors)
     validate_builder(errors)
-    validate_public_tree(errors)
+    validate_public_identity(errors)
     validate_shared_ci(errors)
     if errors:
         for error in errors:

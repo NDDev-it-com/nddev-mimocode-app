@@ -20,8 +20,10 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Iterator
+from io import BytesIO
 from pathlib import Path
 from typing import Any, NoReturn
+from urllib.error import URLError
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_ROOT = ROOT / "setups"
@@ -33,7 +35,18 @@ STAMP_NAME = "NDDEV-MIMOCODE-SETUP.json"
 BACKUP_NAME = "NDDEV-MIMOCODE-BACKUP.json"
 BASELINE_REF = ROOT / "references" / "mimocode-baseline.json"
 TESTED_VERSION = "0.1.9"
-NPM_PACKAGE = "@mimo-ai/cli"
+INSTALLER_URL = "https://mimo.xiaomi.com/install"
+INSTALLER_SIZE = 15819
+INSTALLER_SHA256 = "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2"
+INTERNAL_ASSET_URL_ENV = "NDDEV_MIMOCODE_TEST_ASSET_URL"
+INTERNAL_ASSET_SHA256_ENV = "NDDEV_MIMOCODE_TEST_ASSET_SHA256"
+INTERNAL_ASSET_SIZE_ENV = "NDDEV_MIMOCODE_TEST_ASSET_SIZE"
+INTERNAL_INSTALLER_URL_ENV = "NDDEV_MIMOCODE_TEST_INSTALLER_URL"
+INTERNAL_INSTALLER_SHA256_ENV = "NDDEV_MIMOCODE_TEST_INSTALLER_SHA256"
+INTERNAL_FAIL_AFTER_BINARY_SWAP_ENV = "NDDEV_MIMOCODE_TEST_FAIL_AFTER_BINARY_SWAP"
+INTERNAL_INSTALLER_TIMEOUT_ENV = "NDDEV_MIMOCODE_TEST_INSTALLER_TIMEOUT_SECONDS"
+INTERNAL_PROBE_TIMEOUT_ENV = "NDDEV_MIMOCODE_TEST_PROBE_TIMEOUT_SECONDS"
+SAFE_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 OWNER_FILE_MODE = 0o600
 OWNER_EXECUTABLE_MODE = 0o700
 OWNER_DIRECTORY_MODE = 0o700
@@ -70,6 +83,10 @@ BUILDER_SOURCE_FILES = (
     (
         Path("instructions") / "nddev-builder.md",
         Path("config") / "instructions" / "nddev-builder.md",
+    ),
+    (
+        Path("workflows") / "nddev-builder.js",
+        Path(".mimocode") / "workflows" / "nddev-builder.js",
     ),
 )
 MANAGED_PATHS = (
@@ -115,6 +132,14 @@ TOKEN_ENV_NAMES = {
     "SSH_AUTH_SOCK",
     "GIT_ASKPASS",
 }
+FORBIDDEN_LAUNCH_FLAGS = {
+    "--dangerously-skip-permissions",
+    "--never-ask",
+    "--trust",
+}
+FORBIDDEN_LAUNCH_COMMANDS = {
+    "upgrade",
+}
 
 
 class MiMoCodeSetupError(Exception):
@@ -149,10 +174,14 @@ def owner_of(info: os.stat_result) -> int | None:
     return info.st_uid if hasattr(info, "st_uid") else None
 
 
+def is_current_user_owned(info: os.stat_result) -> bool:
+    return not hasattr(os, "geteuid") or owner_of(info) == os.geteuid()
+
+
 def is_owner_only_file(info: os.stat_result) -> bool:
     if stat.S_IMODE(info.st_mode) != OWNER_FILE_MODE:
         return False
-    if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
+    if not is_current_user_owned(info):
         return False
     return True
 
@@ -160,7 +189,7 @@ def is_owner_only_file(info: os.stat_result) -> bool:
 def is_owner_private_directory(info: os.stat_result) -> bool:
     if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != OWNER_DIRECTORY_MODE:
         return False
-    if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
+    if not is_current_user_owned(info):
         return False
     return True
 
@@ -175,7 +204,13 @@ def require_directory(path: Path, label: str) -> os.stat_result:
     return info
 
 
-def require_regular_file(path: Path, label: str, *, owner_only: bool = False) -> os.stat_result:
+def require_regular_file(
+    path: Path,
+    label: str,
+    *,
+    owner_only: bool = False,
+    max_bytes: int = MANAGED_PAYLOAD_MAX_BYTES,
+) -> os.stat_result:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -184,10 +219,12 @@ def require_regular_file(path: Path, label: str, *, owner_only: bool = False) ->
         fail(f"{label} must be a regular non-symlink file")
     if info.st_nlink != 1:
         fail(f"{label} must not have hard-link aliases")
+    if not is_current_user_owned(info):
+        fail(f"{label} must be owned by the current user")
     if owner_only and not is_owner_only_file(info):
         fail(f"{label} must be owned by the current user with mode 0600")
-    if info.st_size > MANAGED_PAYLOAD_MAX_BYTES:
-        fail(f"{label} exceeds the {MANAGED_PAYLOAD_MAX_BYTES}-byte size limit")
+    if info.st_size > max_bytes:
+        fail(f"{label} exceeds the {max_bytes}-byte size limit")
     return info
 
 
@@ -213,6 +250,8 @@ def read_regular_file(
             fail_concurrent(f"{label} changed while it was being opened")
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             fail(f"{label} changed to an unsafe file")
+        if not is_current_user_owned(opened):
+            fail(f"{label} must be owned by the current user")
         if owner_only and not is_owner_only_file(opened):
             fail(f"{label} must be owned by the current user with mode 0600")
         chunks: list[bytes] = []
@@ -248,6 +287,38 @@ def parse_json_object(content: bytes, label: str) -> dict[str, Any]:
 def load_json_object(path: Path, label: str, *, owner_only: bool = False) -> dict[str, Any]:
     content, _ = read_regular_file(path, label, owner_only=owner_only, max_bytes=METADATA_MAX_BYTES)
     return parse_json_object(content, label)
+
+
+def missing_directory_chain(path: Path) -> list[Path]:
+    chain: list[Path] = []
+    current = path
+    while current != current.parent and not current.exists() and not current.is_symlink():
+        chain.append(current)
+        current = current.parent
+    return chain
+
+
+def require_private_directory(path: Path, label: str) -> os.stat_result:
+    info = require_directory(path, label)
+    if not is_owner_private_directory(info):
+        fail(f"{label} must be owned by the current user with mode 0700")
+    return info
+
+
+def create_missing_directories(chain: list[Path]) -> None:
+    for path in reversed(chain):
+        try:
+            path.mkdir(mode=OWNER_DIRECTORY_MODE)
+        except FileExistsError:
+            fail(f"directory appeared while creating MiMo Code target path: {path}")
+        path.chmod(OWNER_DIRECTORY_MODE)
+        require_private_directory(path, f"created directory {path}")
+
+
+def remove_created_empty_directories(chain: list[Path]) -> None:
+    for path in chain:
+        with contextlib.suppress(FileNotFoundError, OSError):
+            path.rmdir()
 
 
 def require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
@@ -355,7 +426,7 @@ def validate_setup_metadata(metadata: dict[str, Any], setup_id: str) -> None:
     if metadata["managed_files"] != ["config/mimocode.json", "config/AGENTS.md"]:
         fail(f"setup {setup_id} managed file declaration is invalid")
     if (
-        metadata["builder_projection"] != "native-config-skills-agents-instructions"
+        metadata["builder_projection"] != "native-config-skills-agents-instructions-workflows"
         or metadata["builder_default_on"] is not True
     ):
         fail(f"setup {setup_id} must enable native builder projection")
@@ -389,7 +460,7 @@ def build_stamp(
             for relative, content in desired.items()
             if relative != Path(STAMP_NAME)
         },
-        "builder_projection": "mimocode-native-config-skills-agents-instructions",
+        "builder_projection": "mimocode-native-config-skills-agents-instructions-workflows",
         "launch_args": launch_args,
     }
 
@@ -451,8 +522,10 @@ def lock_path(target: Path) -> Path:
 
 @contextlib.contextmanager
 def target_lock(target: Path) -> Iterator[None]:
+    created_parent_chain = missing_directory_chain(target.parent)
+    create_missing_directories(created_parent_chain)
+    require_private_directory(target.parent, "target parent")
     path = lock_path(target)
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.mkdir(path, OWNER_DIRECTORY_MODE)
     except FileExistsError:
@@ -462,6 +535,7 @@ def target_lock(target: Path) -> Iterator[None]:
     finally:
         with contextlib.suppress(FileNotFoundError):
             path.rmdir()
+        remove_created_empty_directories(created_parent_chain)
 
 
 def require_explicit_absolute_target(raw_target: str | None) -> Path:
@@ -483,12 +557,12 @@ def require_explicit_absolute_target(raw_target: str | None) -> Path:
 
 def ensure_target_directory(target: Path) -> Path:
     if target.exists():
-        info = require_directory(target, "target")
-        if not is_owner_private_directory(info):
-            os.chmod(target, OWNER_DIRECTORY_MODE)
+        require_private_directory(target, "target")
         return target.resolve()
-    require_directory(target.parent, "target parent")
+    require_private_directory(target.parent, "target parent")
     target.mkdir(mode=OWNER_DIRECTORY_MODE)
+    target.chmod(OWNER_DIRECTORY_MODE)
+    require_private_directory(target, "target")
     return target.resolve()
 
 
@@ -503,9 +577,13 @@ def ensure_private_parent(target: Path, relative: Path) -> Path:
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 fail(f"managed parent {current.relative_to(target)} must be a real directory")
             if not is_owner_private_directory(info):
-                os.chmod(current, OWNER_DIRECTORY_MODE)
+                fail(
+                    f"managed parent {current.relative_to(target)} must be owned by the current user with mode 0700"
+                )
         else:
             current.mkdir(mode=OWNER_DIRECTORY_MODE)
+            current.chmod(OWNER_DIRECTORY_MODE)
+            require_private_directory(current, f"managed parent {current.relative_to(target)}")
     return target / relative
 
 
@@ -882,9 +960,26 @@ def software_manifest_path(target: Path) -> Path:
     return target / "software" / "mimocode.json"
 
 
+def software_tree_binary(target: Path) -> Path:
+    suffix = ".exe" if sys.platform.startswith("win") else ""
+    return target / "software" / "versions" / TESTED_VERSION / f"{COMMAND_NAME}{suffix}"
+
+
 def mimo_executable(target: Path) -> Path:
     suffix = ".exe" if sys.platform.startswith("win") else ""
     return target / "bin" / f"{COMMAND_NAME}{suffix}"
+
+
+def software_presence(target: Path) -> list[str]:
+    labels = (
+        (mimo_executable(target), f"bin/{mimo_executable(target).name}"),
+        (software_manifest_path(target), "software/mimocode.json"),
+        (
+            software_tree_binary(target),
+            f"software/versions/{TESTED_VERSION}/{software_tree_binary(target).name}",
+        ),
+    )
+    return sorted(label for path, label in labels if path.exists() or path.is_symlink())
 
 
 def software_status(target: Path) -> dict[str, Any]:
@@ -893,42 +988,114 @@ def software_status(target: Path) -> dict[str, Any]:
             "ok": True,
             "installed": False,
             "current": False,
+            "present": False,
+            "presence": [],
             "target": str(target),
             "version": None,
             "executable": None,
+            "drift": [],
         }
     canonical_target = require_explicit_absolute_target(str(target))
+    require_private_directory(canonical_target, "target")
     executable = mimo_executable(canonical_target)
+    tree_binary = software_tree_binary(canonical_target)
     manifest = software_manifest_path(canonical_target)
-    if not executable.exists() or not manifest.exists():
-        return {
-            "ok": True,
-            "installed": False,
-            "current": False,
-            "target": str(canonical_target),
-            "version": None,
-            "executable": str(executable),
-        }
-    require_regular_file(executable, "MiMo Code executable")
-    info = load_json_object(manifest, "software manifest", owner_only=True)
-    current = (
-        info.get("schema_version") == 1
-        and info.get("version") == TESTED_VERSION
-        and info.get("executable") == f"bin/{COMMAND_NAME}"
-    )
-    return {
+    presence = software_presence(canonical_target)
+    base = {
         "ok": True,
-        "installed": True,
-        "current": current,
+        "installed": False,
+        "current": False,
+        "present": bool(presence),
+        "presence": presence,
         "target": str(canonical_target),
-        "version": info.get("version"),
+        "version": None,
         "executable": str(executable),
+        "drift": [],
+    }
+    if not executable.exists() or not manifest.exists() or not tree_binary.exists():
+        if presence:
+            base["drift"] = ["software-incomplete"]
+        return base
+    binary_bytes, binary_info = read_regular_file(
+        executable, "MiMo Code executable", max_bytes=DOWNLOAD_MAX_BYTES
+    )
+    tree_bytes, tree_info = read_regular_file(
+        tree_binary, "MiMo Code version tree executable", max_bytes=DOWNLOAD_MAX_BYTES
+    )
+    if (
+        stat.S_IMODE(binary_info.st_mode) != OWNER_EXECUTABLE_MODE
+        or stat.S_IMODE(tree_info.st_mode) != OWNER_EXECUTABLE_MODE
+    ):
+        base["drift"] = ["software-executable-mode"]
+        return base
+    info = load_json_object(manifest, "software manifest", owner_only=True)
+    binary_sha = sha256_bytes(binary_bytes)
+    tree_sha = sha256_bytes(tree_bytes)
+    drift: list[str] = []
+    if info.get("schema_version") != 2:
+        drift.append("schema_version")
+    if info.get("version") != TESTED_VERSION:
+        drift.append("version")
+    if info.get("command") != COMMAND_NAME:
+        drift.append("command")
+    if info.get("executable") != f"bin/{executable.name}":
+        drift.append("executable")
+    if (
+        info.get("version_tree_executable")
+        != f"software/versions/{TESTED_VERSION}/{tree_binary.name}"
+    ):
+        drift.append("version_tree_executable")
+    if info.get("installer_url") != INSTALLER_URL:
+        drift.append("installer_url")
+    if info.get("installer_size") != INSTALLER_SIZE:
+        drift.append("installer_size")
+    if info.get("installer_sha256") != INSTALLER_SHA256:
+        drift.append("installer_sha256")
+    asset_key, asset = detect_platform_asset()
+    expected_url = asset.get("url")
+    expected_sha = asset.get("sha256")
+    expected_size = asset.get("size")
+    if info.get("asset") != asset_key:
+        drift.append("asset")
+    if info.get("asset_url") != expected_url:
+        drift.append("asset_url")
+    if info.get("asset_sha256") != expected_sha:
+        drift.append("asset_sha256")
+    if info.get("asset_size") != expected_size:
+        drift.append("asset_size")
+    if info.get("binary_sha256") != binary_sha or tree_sha != binary_sha:
+        drift.append("binary_sha256")
+    return {
+        **base,
+        "installed": True,
+        "current": not drift,
+        "version": info.get("version"),
+        "drift": drift,
+        "binary_sha256": binary_sha,
     }
 
 
-def download_bytes(url: str) -> bytes:
+def read_url_or_file(url: str, *, max_bytes: int, expected_size: int | None = None) -> bytes:
+    if url.startswith("file://"):
+        data, _ = read_regular_file(Path(url[7:]), f"test artifact {url}", max_bytes=max_bytes)
+        if expected_size is not None and len(data) != expected_size:
+            fail(f"test artifact size mismatch for {url}")
+        return data
     request = urllib.request.Request(url, headers={"User-Agent": PRODUCT_NAME})
-    with urllib.request.urlopen(request, timeout=PROCESS_TIMEOUT_SECONDS) as response:
+    try:
+        response_context = urllib.request.urlopen(request, timeout=PROCESS_TIMEOUT_SECONDS)
+    except TimeoutError:
+        fail(f"MiMo Code download timed out for {url}")
+    except URLError as exc:
+        fail(f"MiMo Code download failed for {url}: {exc.reason}")
+    with response_context as response:
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            length = int(content_length)
+            if expected_size is not None and length != expected_size:
+                fail(f"MiMo Code download Content-Length mismatch for {url}")
+            if length > max_bytes:
+                fail("MiMo Code download exceeds bounded size before reading")
         chunks: list[bytes] = []
         total = 0
         while True:
@@ -936,100 +1103,501 @@ def download_bytes(url: str) -> bytes:
             if not chunk:
                 break
             total += len(chunk)
-            if total > DOWNLOAD_MAX_BYTES:
+            if total > max_bytes:
                 fail("MiMo Code download exceeded the 256 MiB bound")
             chunks.append(chunk)
-    return b"".join(chunks)
+    data = b"".join(chunks)
+    if expected_size is not None and len(data) != expected_size:
+        fail(f"MiMo Code downloaded size mismatch for {url}")
+    return data
+
+
+def download_bytes(url: str) -> bytes:
+    return read_url_or_file(url, max_bytes=DOWNLOAD_MAX_BYTES)
 
 
 def safe_tar_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
-    members = archive.getmembers()
-    for member in members:
-        path = Path(member.name)
-        if path.is_absolute() or ".." in path.parts:
-            fail(f"unsafe archive member path: {member.name}")
-        if member.issym() or member.islnk() or member.isdev():
-            fail(f"unsafe archive member type: {member.name}")
-    return members
+    del archive
+    fail("legacy MiMo Code tar extraction helper is not available")
+
+
+def validate_archive_member_path(name: str) -> None:
+    normalized = name.replace("\\", "/")
+    if "\x00" in normalized or normalized.startswith("//"):
+        fail(f"unsafe archive member path: {name}")
+    if re.fullmatch(r"[A-Za-z]:.*", normalized):
+        fail(f"unsafe archive member path: {name}")
+    path = Path(normalized)
+    if path.is_absolute() or ".." in path.parts:
+        fail(f"unsafe archive member path: {name}")
+
+
+def extract_verified_binary(archive_bytes: bytes, asset_name: str) -> bytes:
+    candidates: list[tuple[str, bytes]] = []
+    expected_names = {COMMAND_NAME, f"{COMMAND_NAME}.exe"}
+    if asset_name.endswith(".zip"):
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+            for member in archive.infolist():
+                validate_archive_member_path(member.filename)
+                mode = member.external_attr >> 16
+                name = Path(member.filename).name
+                if name not in expected_names:
+                    continue
+                if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or mode == 0):
+                    fail(f"unsafe archive member type: {member.filename}")
+                if member.file_size > DOWNLOAD_MAX_BYTES:
+                    fail("MiMo Code archive binary exceeds bounded size")
+                candidates.append((member.filename, archive.read(member)))
+    else:
+        with tarfile.open(fileobj=BytesIO(archive_bytes), mode="r:*") as archive:
+            for member in archive.getmembers():
+                validate_archive_member_path(member.name)
+                name = Path(member.name).name
+                if name not in expected_names:
+                    continue
+                if member.issym() or member.islnk() or member.isdev() or not member.isfile():
+                    fail(f"unsafe archive member type: {member.name}")
+                if member.size > DOWNLOAD_MAX_BYTES:
+                    fail("MiMo Code archive binary exceeds bounded size")
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    fail(f"cannot read archive member: {member.name}")
+                candidates.append((member.name, extracted.read(DOWNLOAD_MAX_BYTES + 1)))
+    if len(candidates) != 1:
+        fail(f"archive must contain exactly one MiMo Code executable, found {len(candidates)}")
+    name, data = candidates[0]
+    if len(data) > DOWNLOAD_MAX_BYTES:
+        fail(f"MiMo Code archive member too large: {name}")
+    return data
+
+
+def selected_asset() -> tuple[str, dict[str, Any]]:
+    asset_key, asset = detect_platform_asset()
+    override_url = os.environ.get(INTERNAL_ASSET_URL_ENV)
+    if override_url:
+        asset = dict(asset)
+        asset["url"] = override_url
+        if os.environ.get(INTERNAL_ASSET_SHA256_ENV):
+            asset["sha256"] = os.environ[INTERNAL_ASSET_SHA256_ENV]
+        if os.environ.get(INTERNAL_ASSET_SIZE_ENV):
+            asset["size"] = int(os.environ[INTERNAL_ASSET_SIZE_ENV])
+        asset["name"] = Path(override_url).name
+        asset_key = "internal-test-asset"
+    return asset_key, asset
+
+
+def read_pinned_installer() -> tuple[bytes, str, str, int]:
+    source = os.environ.get(INTERNAL_INSTALLER_URL_ENV) or INSTALLER_URL
+    expected_size = None if source != INSTALLER_URL else INSTALLER_SIZE
+    installer = read_url_or_file(source, max_bytes=2 * 1024 * 1024, expected_size=expected_size)
+    digest = sha256_bytes(installer)
+    expected = os.environ.get(INTERNAL_INSTALLER_SHA256_ENV) or INSTALLER_SHA256
+    if digest != expected:
+        fail("MiMo Code installer SHA-256 mismatch")
+    return installer, digest, source, len(installer)
+
+
+def internal_timeout_seconds(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        timeout = float(value)
+    except ValueError:
+        fail(f"{name} must be a positive timeout in seconds")
+    if timeout <= 0:
+        fail(f"{name} must be a positive timeout in seconds")
+    return timeout
+
+
+def minimal_process_env(bin_dir: Path | None = None, *, tmp_dir: Path) -> dict[str, str]:
+    path = SAFE_SYSTEM_PATH
+    if bin_dir is not None:
+        path = f"{bin_dir}:{path}"
+    env = {
+        "PATH": path,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "HOME": "/nonexistent",
+        "SHELL": "",
+        "TMPDIR": str(tmp_dir),
+    }
+    for name in ("LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"):
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    return env
+
+
+def run_official_installer(
+    installer: bytes, installer_source: str, installer_sha256: str, verified_binary: bytes
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix=".nddev-mimocode-installer-") as stage_raw:
+        stage = Path(stage_raw)
+        home = stage / "home"
+        tmp_dir = stage / "tmp"
+        fds_base = stage / "fds"
+        for directory in (
+            home,
+            tmp_dir,
+            fds_base,
+            stage / "xdg-config",
+            stage / "xdg-data",
+            stage / "xdg-state",
+            stage / "xdg-cache",
+        ):
+            directory.mkdir(mode=OWNER_DIRECTORY_MODE)
+            directory.chmod(OWNER_DIRECTORY_MODE)
+        installer_path = stage / "install.sh"
+        binary_path = stage / "verified" / COMMAND_NAME
+        binary_path.parent.mkdir(mode=OWNER_DIRECTORY_MODE)
+        binary_path.parent.chmod(OWNER_DIRECTORY_MODE)
+        installer_path.write_bytes(installer)
+        installer_path.chmod(OWNER_EXECUTABLE_MODE)
+        binary_path.write_bytes(verified_binary)
+        binary_path.chmod(OWNER_EXECUTABLE_MODE)
+        env = minimal_process_env(tmp_dir=tmp_dir)
+        env.update(
+            {
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+                "XDG_CONFIG_HOME": str(stage / "xdg-config"),
+                "XDG_DATA_HOME": str(stage / "xdg-data"),
+                "XDG_STATE_HOME": str(stage / "xdg-state"),
+                "XDG_CACHE_HOME": str(stage / "xdg-cache"),
+                "MIMO_FDS_BASE": str(fds_base),
+                "MIMOCODE_HOME": str(stage / "mimocode-home"),
+                "MIMOCODE_MIMO_ONLY": "1",
+                "SHELL": "",
+            }
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(installer_path),
+                    "--version",
+                    TESTED_VERSION,
+                    "--no-modify-path",
+                    "--binary",
+                    str(binary_path),
+                ],
+                cwd=stage,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=internal_timeout_seconds(
+                    INTERNAL_INSTALLER_TIMEOUT_ENV, PROCESS_TIMEOUT_SECONDS
+                ),
+            )
+        except FileNotFoundError as exc:
+            fail(f"MiMo Code installer runner is missing: {exc.filename or 'bash'}")
+        except subprocess.TimeoutExpired:
+            fail("MiMo Code official installer timed out")
+        if completed.returncode != 0:
+            fail(
+                "MiMo Code official installer failed: "
+                + (completed.stderr or completed.stdout).strip()
+            )
+        installed = home / ".mimocode" / "bin" / COMMAND_NAME
+        binary, info = read_regular_file(
+            installed, "MiMo Code staged installer binary", max_bytes=DOWNLOAD_MAX_BYTES
+        )
+        if stat.S_IMODE(info.st_mode) != OWNER_EXECUTABLE_MODE:
+            fail("MiMo Code staged installer binary must have mode 0700")
+        probe_env = minimal_process_env(installed.parent, tmp_dir=tmp_dir)
+        probe_env["HOME"] = str(stage / "probe-home")
+        Path(probe_env["HOME"]).mkdir(mode=OWNER_DIRECTORY_MODE)
+        Path(probe_env["HOME"]).chmod(OWNER_DIRECTORY_MODE)
+        try:
+            probe = subprocess.run(
+                [str(installed), "--version"],
+                cwd=stage,
+                env=probe_env,
+                text=True,
+                input="",
+                capture_output=True,
+                check=False,
+                timeout=internal_timeout_seconds(INTERNAL_PROBE_TIMEOUT_ENV, 15.0),
+            )
+        except FileNotFoundError as exc:
+            fail(
+                f"MiMo Code staged version probe executable is missing: {exc.filename or installed}"
+            )
+        except subprocess.TimeoutExpired:
+            fail("MiMo Code staged version probe timed out")
+        version_output = (probe.stdout + probe.stderr).strip()
+        if probe.returncode != 0 or TESTED_VERSION not in version_output:
+            fail("MiMo Code staged binary did not report the pinned version")
+        return {
+            "binary": binary,
+            "binary_sha256": sha256_bytes(binary),
+            "installer_source": installer_source,
+            "installer_sha256": installer_sha256,
+            "version_output": version_output,
+        }
+
+
+def snapshot_optional_file(path: Path, label: str) -> tuple[bytes | None, int | None]:
+    if not path.exists() and not path.is_symlink():
+        return None, None
+    content, info = read_regular_file(path, label, max_bytes=DOWNLOAD_MAX_BYTES)
+    return content, stat.S_IMODE(info.st_mode)
+
+
+def write_private_file(path: Path, content: bytes, target: Path, mode: int) -> None:
+    ensure_private_parent(target, path.relative_to(target))
+    temporary = path.with_name(f".{path.name}.nddev.tmp.{os.getpid()}.{time.time_ns()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
+
+
+def remove_empty_directory_if_created(path: Path, existed_before: bool) -> None:
+    if existed_before:
+        return
+    with contextlib.suppress(FileNotFoundError, OSError):
+        path.rmdir()
+
+
+def validate_safe_software_presence(target: Path) -> None:
+    for directory, label in (
+        (mimo_executable(target).parent, "bin"),
+        (software_manifest_path(target).parent, "software"),
+        (software_tree_binary(target).parent.parent, "software/versions"),
+        (software_tree_binary(target).parent, f"software/versions/{TESTED_VERSION}"),
+    ):
+        if directory.exists() or directory.is_symlink():
+            require_private_directory(directory, label)
+    for file_path, label, mode in (
+        (mimo_executable(target), f"bin/{mimo_executable(target).name}", OWNER_EXECUTABLE_MODE),
+        (
+            software_tree_binary(target),
+            f"software/versions/{TESTED_VERSION}/{software_tree_binary(target).name}",
+            OWNER_EXECUTABLE_MODE,
+        ),
+        (software_manifest_path(target), "software/mimocode.json", OWNER_FILE_MODE),
+    ):
+        if file_path.exists() or file_path.is_symlink():
+            info = require_regular_file(file_path, label, max_bytes=DOWNLOAD_MAX_BYTES)
+            if stat.S_IMODE(info.st_mode) != mode:
+                fail(f"{label} must have mode {mode:04o}")
 
 
 def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
-    canonical_target = ensure_target_directory(target)
-    with target_lock(canonical_target):
-        asset_key, asset = detect_platform_asset()
-        url = asset.get("url")
-        expected_sha = asset.get("sha256")
-        if not isinstance(url, str) or not isinstance(expected_sha, str):
-            fail(f"baseline asset {asset_key} is incomplete")
-        archive_bytes = download_bytes(url)
-        actual_sha = sha256_bytes(archive_bytes)
-        if actual_sha != expected_sha:
-            fail(f"downloaded MiMo Code digest mismatch for {asset_key}")
-        staging = (
-            canonical_target.parent / f".{canonical_target.name}.nddev-mimocode-software-stage"
-        )
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(mode=OWNER_DIRECTORY_MODE)
+    with target_lock(target):
+        before_target_exists = target.exists() or target.is_symlink()
+        if operation == "update-cli" and not before_target_exists:
+            fail("update-cli requires existing target-owned MiMo Code software presence")
+        canonical_target = ensure_target_directory(target)
         try:
-            archive_path = staging / Path(url).name
-            archive_path.write_bytes(archive_bytes)
-            unpacked = staging / "unpacked"
-            if archive_path.name.endswith(".zip"):
-                with zipfile.ZipFile(archive_path) as archive:
-                    for name in archive.namelist():
-                        path = Path(name)
-                        if path.is_absolute() or ".." in path.parts:
-                            fail(f"unsafe archive member path: {name}")
-                    archive.extractall(unpacked)
-            else:
-                with tarfile.open(archive_path, "r:gz") as archive:
-                    archive.extractall(unpacked, members=safe_tar_members(archive))
-            binary_source: Path | None = None
-            for candidate in unpacked.rglob("*"):
-                if candidate.name in {COMMAND_NAME, f"{COMMAND_NAME}.exe"} and candidate.is_file():
-                    binary_source = candidate
-                    break
-            if binary_source is None:
-                fail(f"archive {archive_path.name} did not contain a MiMo Code executable")
-            bin_dir = canonical_target / "bin"
-            bin_dir.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-            executable = mimo_executable(canonical_target)
-            temporary = bin_dir / f".{executable.name}.tmp"
-            shutil.copy2(binary_source, temporary)
-            temporary.chmod(OWNER_EXECUTABLE_MODE)
-            os.replace(temporary, executable)
-            manifest = {
-                "schema_version": 1,
-                "version": TESTED_VERSION,
-                "executable": f"bin/{COMMAND_NAME}",
-                "asset": asset_key,
-                "sha256": expected_sha,
-                "source": url,
-            }
-            software_manifest_path(canonical_target).parent.mkdir(
-                mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True
+            status = software_status(canonical_target)
+            if operation == "install-cli" and status["present"]:
+                fail(
+                    "install-cli requires absent target-owned MiMo Code software presence; use update-cli"
+                )
+            if operation == "update-cli" and not status["present"]:
+                fail("update-cli requires existing target-owned MiMo Code software presence")
+            if operation == "update-cli" and status["current"]:
+                return {
+                    "ok": True,
+                    "operation": "current",
+                    "target": str(canonical_target),
+                    "version": TESTED_VERSION,
+                    "changed": [],
+                    "executable": str(mimo_executable(canonical_target)),
+                }
+            validate_safe_software_presence(canonical_target)
+            before_bin_dir = mimo_executable(canonical_target).parent.exists()
+            before_software_dir = software_manifest_path(canonical_target).parent.exists()
+            before_versions_dir = software_tree_binary(canonical_target).parent.parent.exists()
+            before_version_dir = software_tree_binary(canonical_target).parent.exists()
+            before_executable, before_executable_mode = snapshot_optional_file(
+                mimo_executable(canonical_target), "MiMo Code executable"
             )
-            software_manifest_path(canonical_target).write_bytes(canonical_json(manifest))
-            software_manifest_path(canonical_target).chmod(OWNER_FILE_MODE)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-    return {
-        "ok": True,
-        "operation": operation,
-        "target": str(canonical_target),
-        "version": TESTED_VERSION,
-        "asset": asset_key,
-        "executable": str(mimo_executable(canonical_target)),
-    }
+            before_tree, before_tree_mode = snapshot_optional_file(
+                software_tree_binary(canonical_target), "MiMo Code version tree executable"
+            )
+            before_manifest, before_manifest_mode = snapshot_optional_file(
+                software_manifest_path(canonical_target), "software manifest"
+            )
+            asset_key, asset = selected_asset()
+            url = asset.get("url")
+            expected_sha = asset.get("sha256")
+            expected_size = asset.get("size")
+            name = asset.get("name") or Path(str(url)).name
+            if (
+                not isinstance(url, str)
+                or not isinstance(expected_sha, str)
+                or not isinstance(expected_size, int)
+            ):
+                fail(f"baseline asset {asset_key} is incomplete")
+            archive_bytes = read_url_or_file(
+                url, max_bytes=DOWNLOAD_MAX_BYTES, expected_size=expected_size
+            )
+            if sha256_bytes(archive_bytes) != expected_sha:
+                fail(f"downloaded MiMo Code digest mismatch for {asset_key}")
+            verified_binary = extract_verified_binary(archive_bytes, str(name))
+            installer, installer_sha, installer_source, installer_size = read_pinned_installer()
+            artifact = run_official_installer(
+                installer, installer_source, installer_sha, verified_binary
+            )
+            manifest = {
+                "schema_version": 2,
+                "version": TESTED_VERSION,
+                "command": COMMAND_NAME,
+                "executable": f"bin/{mimo_executable(canonical_target).name}",
+                "version_tree_executable": (
+                    f"software/versions/{TESTED_VERSION}/{software_tree_binary(canonical_target).name}"
+                ),
+                "asset": asset_key,
+                "asset_url": url,
+                "asset_size": expected_size,
+                "asset_sha256": expected_sha,
+                "installer_url": artifact["installer_source"],
+                "installer_size": installer_size,
+                "installer_sha256": artifact["installer_sha256"],
+                "binary_sha256": artifact["binary_sha256"],
+                "version_output": artifact["version_output"],
+            }
+            try:
+                write_private_file(
+                    software_tree_binary(canonical_target),
+                    artifact["binary"],
+                    canonical_target,
+                    OWNER_EXECUTABLE_MODE,
+                )
+                write_private_file(
+                    mimo_executable(canonical_target),
+                    artifact["binary"],
+                    canonical_target,
+                    OWNER_EXECUTABLE_MODE,
+                )
+                if os.environ.get(INTERNAL_FAIL_AFTER_BINARY_SWAP_ENV) == "1":
+                    fail("injected failure after MiMo Code binary swap")
+                write_private_file(
+                    software_manifest_path(canonical_target),
+                    canonical_json(manifest),
+                    canonical_target,
+                    OWNER_FILE_MODE,
+                )
+                final = software_status(canonical_target)
+                if not final["installed"]:
+                    fail("MiMo Code software install did not produce target-owned software")
+                if installer_source == INSTALLER_URL and url.startswith("https://"):
+                    if not final["current"]:
+                        fail(
+                            "MiMo Code software install did not produce current target-owned software"
+                        )
+                else:
+                    structural = [
+                        item
+                        for item in final["drift"]
+                        if item
+                        not in {
+                            "asset",
+                            "asset_url",
+                            "asset_sha256",
+                            "asset_size",
+                            "installer_size",
+                            "installer_url",
+                            "installer_sha256",
+                        }
+                    ]
+                    if structural:
+                        fail(
+                            "MiMo Code test install produced structural drift: "
+                            + ", ".join(structural)
+                        )
+            except BaseException:
+                for path, content, mode in (
+                    (mimo_executable(canonical_target), before_executable, before_executable_mode),
+                    (software_tree_binary(canonical_target), before_tree, before_tree_mode),
+                    (
+                        software_manifest_path(canonical_target),
+                        before_manifest,
+                        before_manifest_mode,
+                    ),
+                ):
+                    if content is None:
+                        with contextlib.suppress(FileNotFoundError):
+                            path.unlink()
+                    else:
+                        write_private_file(path, content, canonical_target, mode or OWNER_FILE_MODE)
+                remove_empty_directory_if_created(
+                    software_tree_binary(canonical_target).parent, before_version_dir
+                )
+                remove_empty_directory_if_created(
+                    software_tree_binary(canonical_target).parent.parent, before_versions_dir
+                )
+                remove_empty_directory_if_created(
+                    software_manifest_path(canonical_target).parent, before_software_dir
+                )
+                remove_empty_directory_if_created(
+                    mimo_executable(canonical_target).parent, before_bin_dir
+                )
+                raise
+            return {
+                "ok": True,
+                "operation": "install" if operation == "install-cli" else "update",
+                "target": str(canonical_target),
+                "version": TESTED_VERSION,
+                "asset": asset_key,
+                "binary_sha256": artifact["binary_sha256"],
+                "executable": str(mimo_executable(canonical_target)),
+            }
+        except BaseException:
+            remove_empty_directory_if_created(canonical_target, before_target_exists)
+            raise
+
+
+def remove_cli(target: Path) -> dict[str, Any]:
+    canonical_target = require_explicit_absolute_target(str(target))
+    with target_lock(canonical_target):
+        status = software_status(canonical_target)
+        if not status["present"]:
+            fail("remove-cli requires existing target-owned MiMo Code software presence")
+        validate_safe_software_presence(canonical_target)
+        for path in (
+            mimo_executable(canonical_target),
+            software_tree_binary(canonical_target),
+            software_manifest_path(canonical_target),
+        ):
+            if path.exists() or path.is_symlink():
+                require_regular_file(path, f"software file {path.relative_to(canonical_target)}")
+                path.unlink()
+        for directory in (
+            software_tree_binary(canonical_target).parent,
+            software_tree_binary(canonical_target).parent.parent,
+            software_manifest_path(canonical_target).parent,
+            mimo_executable(canonical_target).parent,
+        ):
+            with contextlib.suppress(FileNotFoundError, OSError):
+                directory.rmdir()
+    return {"ok": True, "operation": "remove-cli", "target": str(canonical_target), "removed": True}
 
 
 def isolated_child_environment(target: Path) -> dict[str, str]:
     runtime = target / "runtime"
     tmp = runtime / "tmp"
-    for directory in (runtime, tmp):
-        directory.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-        directory.chmod(OWNER_DIRECTORY_MODE)
+    for directory in (
+        runtime,
+        tmp,
+        runtime / "xdg-config",
+        runtime / "xdg-cache",
+        runtime / "xdg-state",
+        runtime / "xdg-data",
+        target / "home",
+    ):
+        create_missing_directories(missing_directory_chain(directory))
+        require_private_directory(directory, f"runtime directory {directory.relative_to(target)}")
     env: dict[str, str] = {}
     for name, value in os.environ.items():
         if name in TOKEN_ENV_NAMES:
@@ -1042,41 +1610,50 @@ def isolated_child_environment(target: Path) -> dict[str, str]:
             "HOME": str(target / "home"),
             "USERPROFILE": str(target / "home"),
             "MIMOCODE_HOME": str(target),
-            "MIMOCODE_CONFIG": str(target / "config" / "mimocode.json"),
             "MIMOCODE_CONFIG_DIR": str(target / "config"),
-            "MIMOCODE_DISABLE_AUTOUPDATE": "true",
-            "MIMOCODE_DISABLE_PROVIDER_ENV": "true",
+            "MIMOCODE_DISABLE_CRON": "1",
+            "MIMOCODE_DISABLE_LOG_ROTATION": "1",
             "MIMOCODE_MIMO_ONLY": "true",
-            "MIMOCODE_DISABLE_SHARE": "true",
-            "MIMOCODE_ENABLE_ANALYSIS": "false",
-            "MIMOCODE_DISABLE_GIT": "true",
-            "MIMOCODE_DISABLE_LSP_DOWNLOAD": "true",
-            "MIMOCODE_DISABLE_MODELS_FETCH": "true",
+            "MIMOCODE_PURE": "1",
             "TMPDIR": str(tmp),
             "XDG_CONFIG_HOME": str(runtime / "xdg-config"),
             "XDG_CACHE_HOME": str(runtime / "xdg-cache"),
             "XDG_STATE_HOME": str(runtime / "xdg-state"),
             "XDG_DATA_HOME": str(runtime / "xdg-data"),
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": SAFE_SYSTEM_PATH,
         }
     )
-    (target / "home").mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
     return env
+
+
+def validate_launch_args(args: list[str]) -> None:
+    for item in args:
+        flag = item.split("=", 1)[0]
+        if flag in FORBIDDEN_LAUNCH_FLAGS:
+            fail(f"launch argument {flag} is not allowed by the managed MiMo Code scope")
+    first_command = next((item for item in args if item and not item.startswith("-")), None)
+    if first_command in FORBIDDEN_LAUNCH_COMMANDS:
+        fail(f"launch command {first_command} is not allowed by the managed MiMo Code scope")
 
 
 def launch_mimo(target: Path, args: list[str]) -> int:
     canonical_target = require_explicit_absolute_target(str(target))
-    state = inspect_target(canonical_target)
-    if state["state"] != "managed":
-        fail("target is not managed by nddev-mimocode-app")
-    status = software_status(canonical_target)
-    if not status["installed"] or not status["current"]:
-        fail("MiMo Code is not installed at the tested version in this target")
-    child_args = list(state["launch_args"]) + args
+    validate_launch_args(args)
+    with target_lock(canonical_target):
+        state = inspect_target(canonical_target)
+        if state["state"] != "managed":
+            fail("target is not managed by nddev-mimocode-app")
+        status = software_status(canonical_target)
+        if not status["installed"] or not status["current"]:
+            fail("MiMo Code is not installed at the tested version in this target")
+        child_args = list(state["launch_args"]) + args
+        executable = mimo_executable(canonical_target)
+        require_regular_file(executable, "MiMo Code executable", max_bytes=DOWNLOAD_MAX_BYTES)
+        child_env = isolated_child_environment(canonical_target)
     completed = subprocess.run(
-        [str(mimo_executable(canonical_target)), *child_args],
-        cwd=os.getcwd(),
-        env=isolated_child_environment(canonical_target),
+        [str(executable), *child_args],
+        cwd=canonical_target,
+        env=child_env,
         check=False,
         timeout=None,
     )
@@ -1117,7 +1694,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     remove_parser = subparsers.add_parser("remove", help="remove nddev-managed setup files")
     add_target_argument(remove_parser)
     add_json_argument(remove_parser)
-    for name in ("install-cli", "update-cli"):
+    for name in ("install-cli", "update-cli", "remove-cli"):
         command_parser = subparsers.add_parser(name, help=f"{name} exact tested MiMo Code")
         add_target_argument(command_parser)
         add_json_argument(command_parser)
@@ -1171,6 +1748,10 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "update-cli":
         target = require_explicit_absolute_target(args.target)
         print_payload(install_or_update_cli(target, operation="update-cli"), json_output=args.json)
+        return 0
+    if args.command == "remove-cli":
+        target = require_explicit_absolute_target(args.target)
+        print_payload(remove_cli(target), json_output=args.json)
         return 0
     if args.command == "launch":
         target = require_explicit_absolute_target(args.target)

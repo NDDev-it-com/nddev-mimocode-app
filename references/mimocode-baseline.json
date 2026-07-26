@@ -3,17 +3,16 @@
   "captured_at": "2026-07-26",
   "product": "MiMo Code",
   "command": "mimo",
-  "npm": {
-    "package": "@mimo-ai/cli",
-    "version": "0.1.9",
-    "integrity": "sha512-YFqiotp1sHDmj2BOiw2AbgCY2zm+c7Z36lh5JNL6KACEvYgerB5kqqldqcy/xI4Erry501DsTN1YPxo2mw6fAQ==",
-    "tarball": "https://registry.npmjs.org/@mimo-ai/cli/-/cli-0.1.9.tgz"
-  },
   "install": {
     "script": "https://mimo.xiaomi.com/install",
+    "script_size": 15819,
+    "script_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
+    "flags": ["--version", "0.1.9", "--no-modify-path", "--binary", "<verified-binary>"],
     "windows_script": "https://mimo.xiaomi.com/install.ps1",
     "fds_latest_url": "https://mimocode.cnbj1.mi-fds.com/mimocode/mimocode/releases/latest",
-    "fds_latest": "0.1.9"
+    "fds_latest": "0.1.9",
+    "module_install_mechanism": "official-installer-with-pinned-github-asset",
+    "package_manager_install": null
   },
   "release": {
     "repository": "XiaomiMiMo/MiMo-Code",
@@ -98,14 +97,20 @@
   },
   "native_surfaces": {
     "config_root_env": "MIMOCODE_HOME",
-    "config_file_env": "MIMOCODE_CONFIG",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
-    "global_config_files": ["config.json", "mimocode.json", "mimocode.jsonc"],
+    "global_config_files": ["~/.config/mimocode/mimocode.jsonc", "~/.config/mimocode/mimocode.json"],
+    "tui_config": "~/.config/mimocode/tui.json",
+    "data": "~/.local/share/mimocode",
+    "state": "~/.local/state/mimocode",
+    "cache": "~/.cache/mimocode",
+    "project_config_files": [".mimocode/mimocode.jsonc", ".mimocode/mimocode.json"],
     "schema": "https://mimo.xiaomi.com/mimocode/config.json",
     "permission_field": "permission",
-    "global_rules": "config/AGENTS.md",
-    "skills": "config/skills/**/SKILL.md",
-    "agents": "config/agents/*.md",
+    "instructions": [".mimocode/AGENTS.md", "AGENTS.md"],
+    "skills": ".mimocode/skills/**/SKILL.md",
+    "agents": ".mimocode/agent/*.md",
+    "workflows": ".mimocode/workflows/*.js",
+    "mcp": "mimocode.jsonc mcp object",
     "marketplace": null
   },
   "sources": [
@@ -116,7 +121,6 @@
     "https://mimo.xiaomi.com/mimocode/skills",
     "https://mimo.xiaomi.com/mimocode/agents",
     "https://mimo.xiaomi.com/mimocode/cli-options",
-    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
-    "https://registry.npmjs.org/@mimo-ai/cli"
+    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9"
   ]
 }
