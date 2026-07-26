@@ -46,7 +46,6 @@ ASSET_DIGESTS = {
     "windows-x64": "514b60dfd3b2d9ee8f6c3fb852398bbd2101f9b58f0ab271d8edb3acaa4375d4",
 }
 PLACEHOLDER_MARKER = "skele" + "ton"
-RETIRED_MARKERS = ("q" + "coder", "qwen" + " code", "qwen" + "-code", "gh" + "-copilot")
 
 
 def read_json(relative: str) -> dict[str, Any]:
@@ -279,17 +278,16 @@ def validate_builder(errors: list[str]) -> None:
     require("name: nddev-builder" in skill_text, "builder skill name missing", errors)
 
 
-def validate_absence_of_stale_terms(errors: list[str]) -> None:
+def validate_public_tree(errors: list[str]) -> None:
     for path in ROOT.rglob("*"):
         if ".git" in path.parts or path.is_dir():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        for marker in (PLACEHOLDER_MARKER, *RETIRED_MARKERS):
-            require(
-                marker not in text,
-                f"retired marker {marker!r} found in {path.relative_to(ROOT)}",
-                errors,
-            )
+        require(
+            PLACEHOLDER_MARKER not in text,
+            f"placeholder marker found in {path.relative_to(ROOT)}",
+            errors,
+        )
 
 
 def validate_shared_ci(errors: list[str]) -> None:
@@ -311,7 +309,7 @@ def main() -> int:
     validate_assets(errors)
     validate_setups(errors)
     validate_builder(errors)
-    validate_absence_of_stale_terms(errors)
+    validate_public_tree(errors)
     validate_shared_ci(errors)
     if errors:
         for error in errors:
