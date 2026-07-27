@@ -49,10 +49,12 @@ INTERNAL_PROBE_TIMEOUT_ENV = "NDDEV_MIMOCODE_TEST_PROBE_TIMEOUT_SECONDS"
 SAFE_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 OWNER_FILE_MODE = 0o600
 OWNER_EXECUTABLE_MODE = 0o700
+OFFICIAL_INSTALLER_EXECUTABLE_MODE = 0o755
 OWNER_DIRECTORY_MODE = 0o700
 METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024
 DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
+SOFTWARE_EXECUTABLE_MAX_BYTES = 128 * 1024 * 1024
 PROCESS_TIMEOUT_SECONDS = 120
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 MANAGED_CONFIG_KEYS = (
@@ -235,7 +237,9 @@ def read_regular_file(
     owner_only: bool = False,
     max_bytes: int = MANAGED_PAYLOAD_MAX_BYTES,
 ) -> tuple[bytes, os.stat_result]:
-    before = require_regular_file(path, label, owner_only=owner_only)
+    before = require_regular_file(
+        path, label, owner_only=owner_only, max_bytes=max_bytes
+    )
     if before.st_size > max_bytes:
         fail(f"{label} exceeds the {max_bytes}-byte size limit")
     flags = os.O_RDONLY
@@ -267,7 +271,9 @@ def read_regular_file(
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    final = require_regular_file(path, label, owner_only=owner_only)
+    final = require_regular_file(
+        path, label, owner_only=owner_only, max_bytes=max_bytes
+    )
     expected = identity_of(before)
     if identity_of(after) != expected or identity_of(final) != expected:
         fail_concurrent(f"{label} changed while it was being read")
@@ -1017,10 +1023,14 @@ def software_status(target: Path) -> dict[str, Any]:
             base["drift"] = ["software-incomplete"]
         return base
     binary_bytes, binary_info = read_regular_file(
-        executable, "MiMo Code executable", max_bytes=DOWNLOAD_MAX_BYTES
+        executable,
+        "MiMo Code executable",
+        max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES,
     )
     tree_bytes, tree_info = read_regular_file(
-        tree_binary, "MiMo Code version tree executable", max_bytes=DOWNLOAD_MAX_BYTES
+        tree_binary,
+        "MiMo Code version tree executable",
+        max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES,
     )
     if (
         stat.S_IMODE(binary_info.st_mode) != OWNER_EXECUTABLE_MODE
@@ -1063,6 +1073,33 @@ def software_status(target: Path) -> dict[str, Any]:
         drift.append("asset_sha256")
     if info.get("asset_size") != expected_size:
         drift.append("asset_size")
+    executable_baseline = asset.get("executable")
+    if isinstance(executable_baseline, dict):
+        if info.get("archive_member_path") != executable_baseline.get("path"):
+            drift.append("archive_member_path")
+        if info.get("archive_member_mode") != executable_baseline.get("archive_mode"):
+            drift.append("archive_member_mode")
+        if info.get("installer_binary_mode") != executable_baseline.get(
+            "installer_mode"
+        ):
+            drift.append("installer_binary_mode")
+        if info.get("binary_size") != executable_baseline.get("size"):
+            drift.append("binary_size")
+        if binary_sha != executable_baseline.get("sha256"):
+            drift.append("baseline_binary_sha256")
+    else:
+        if not isinstance(info.get("archive_member_path"), str):
+            drift.append("archive_member_path")
+        if not isinstance(info.get("archive_member_mode"), str):
+            drift.append("archive_member_mode")
+        if not isinstance(info.get("installer_binary_mode"), str):
+            drift.append("installer_binary_mode")
+        if info.get("binary_size") != len(binary_bytes):
+            drift.append("binary_size")
+    if info.get("binary_mode") != f"{OWNER_EXECUTABLE_MODE:04o}":
+        drift.append("binary_mode")
+    if info.get("binary_max_bytes") != SOFTWARE_EXECUTABLE_MAX_BYTES:
+        drift.append("binary_max_bytes")
     if info.get("binary_sha256") != binary_sha or tree_sha != binary_sha:
         drift.append("binary_sha256")
     return {
@@ -1132,8 +1169,8 @@ def validate_archive_member_path(name: str) -> None:
         fail(f"unsafe archive member path: {name}")
 
 
-def extract_verified_binary(archive_bytes: bytes, asset_name: str) -> bytes:
-    candidates: list[tuple[str, bytes]] = []
+def extract_verified_binary(archive_bytes: bytes, asset_name: str) -> tuple[str, int, bytes]:
+    candidates: list[tuple[str, int, bytes]] = []
     expected_names = {COMMAND_NAME, f"{COMMAND_NAME}.exe"}
     if asset_name.endswith(".zip"):
         with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
@@ -1145,9 +1182,11 @@ def extract_verified_binary(archive_bytes: bytes, asset_name: str) -> bytes:
                     continue
                 if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or mode == 0):
                     fail(f"unsafe archive member type: {member.filename}")
-                if member.file_size > DOWNLOAD_MAX_BYTES:
+                if member.file_size > SOFTWARE_EXECUTABLE_MAX_BYTES:
                     fail("MiMo Code archive binary exceeds bounded size")
-                candidates.append((member.filename, archive.read(member)))
+                candidates.append(
+                    (member.filename, stat.S_IMODE(mode), archive.read(member))
+                )
     else:
         with tarfile.open(fileobj=BytesIO(archive_bytes), mode="r:*") as archive:
             for member in archive.getmembers():
@@ -1157,18 +1196,24 @@ def extract_verified_binary(archive_bytes: bytes, asset_name: str) -> bytes:
                     continue
                 if member.issym() or member.islnk() or member.isdev() or not member.isfile():
                     fail(f"unsafe archive member type: {member.name}")
-                if member.size > DOWNLOAD_MAX_BYTES:
+                if member.size > SOFTWARE_EXECUTABLE_MAX_BYTES:
                     fail("MiMo Code archive binary exceeds bounded size")
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     fail(f"cannot read archive member: {member.name}")
-                candidates.append((member.name, extracted.read(DOWNLOAD_MAX_BYTES + 1)))
+                candidates.append(
+                    (
+                        member.name,
+                        stat.S_IMODE(member.mode),
+                        extracted.read(SOFTWARE_EXECUTABLE_MAX_BYTES + 1),
+                    )
+                )
     if len(candidates) != 1:
         fail(f"archive must contain exactly one MiMo Code executable, found {len(candidates)}")
-    name, data = candidates[0]
-    if len(data) > DOWNLOAD_MAX_BYTES:
+    name, mode, data = candidates[0]
+    if len(data) > SOFTWARE_EXECUTABLE_MAX_BYTES:
         fail(f"MiMo Code archive member too large: {name}")
-    return data
+    return name, mode, data
 
 
 def selected_asset() -> tuple[str, dict[str, Any]]:
@@ -1176,6 +1221,7 @@ def selected_asset() -> tuple[str, dict[str, Any]]:
     override_url = os.environ.get(INTERNAL_ASSET_URL_ENV)
     if override_url:
         asset = dict(asset)
+        asset.pop("executable", None)
         asset["url"] = override_url
         if os.environ.get(INTERNAL_ASSET_SHA256_ENV):
             asset["sha256"] = os.environ[INTERNAL_ASSET_SHA256_ENV]
@@ -1301,10 +1347,16 @@ def run_official_installer(
             )
         installed = home / ".mimocode" / "bin" / COMMAND_NAME
         binary, info = read_regular_file(
-            installed, "MiMo Code staged installer binary", max_bytes=DOWNLOAD_MAX_BYTES
+            installed,
+            "MiMo Code staged installer binary",
+            max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES,
         )
-        if stat.S_IMODE(info.st_mode) != OWNER_EXECUTABLE_MODE:
-            fail("MiMo Code staged installer binary must have mode 0700")
+        installer_mode = stat.S_IMODE(info.st_mode)
+        if installer_mode != OFFICIAL_INSTALLER_EXECUTABLE_MODE:
+            fail(
+                "MiMo Code staged installer binary must have official installer mode "
+                f"{OFFICIAL_INSTALLER_EXECUTABLE_MODE:04o}"
+            )
         probe_env = minimal_process_env(installed.parent, tmp_dir=tmp_dir)
         probe_env["HOME"] = str(stage / "probe-home")
         Path(probe_env["HOME"]).mkdir(mode=OWNER_DIRECTORY_MODE)
@@ -1332,16 +1384,19 @@ def run_official_installer(
         return {
             "binary": binary,
             "binary_sha256": sha256_bytes(binary),
+            "installer_binary_mode": f"{installer_mode:04o}",
             "installer_source": installer_source,
             "installer_sha256": installer_sha256,
             "version_output": version_output,
         }
 
 
-def snapshot_optional_file(path: Path, label: str) -> tuple[bytes | None, int | None]:
+def snapshot_optional_file(
+    path: Path, label: str, *, max_bytes: int
+) -> tuple[bytes | None, int | None]:
     if not path.exists() and not path.is_symlink():
         return None, None
-    content, info = read_regular_file(path, label, max_bytes=DOWNLOAD_MAX_BYTES)
+    content, info = read_regular_file(path, label, max_bytes=max_bytes)
     return content, stat.S_IMODE(info.st_mode)
 
 
@@ -1376,17 +1431,28 @@ def validate_safe_software_presence(target: Path) -> None:
     ):
         if directory.exists() or directory.is_symlink():
             require_private_directory(directory, label)
-    for file_path, label, mode in (
-        (mimo_executable(target), f"bin/{mimo_executable(target).name}", OWNER_EXECUTABLE_MODE),
+    for file_path, label, mode, max_bytes in (
+        (
+            mimo_executable(target),
+            f"bin/{mimo_executable(target).name}",
+            OWNER_EXECUTABLE_MODE,
+            SOFTWARE_EXECUTABLE_MAX_BYTES,
+        ),
         (
             software_tree_binary(target),
             f"software/versions/{TESTED_VERSION}/{software_tree_binary(target).name}",
             OWNER_EXECUTABLE_MODE,
+            SOFTWARE_EXECUTABLE_MAX_BYTES,
         ),
-        (software_manifest_path(target), "software/mimocode.json", OWNER_FILE_MODE),
+        (
+            software_manifest_path(target),
+            "software/mimocode.json",
+            OWNER_FILE_MODE,
+            METADATA_MAX_BYTES,
+        ),
     ):
         if file_path.exists() or file_path.is_symlink():
-            info = require_regular_file(file_path, label, max_bytes=DOWNLOAD_MAX_BYTES)
+            info = require_regular_file(file_path, label, max_bytes=max_bytes)
             if stat.S_IMODE(info.st_mode) != mode:
                 fail(f"{label} must have mode {mode:04o}")
 
@@ -1420,13 +1486,19 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
             before_versions_dir = software_tree_binary(canonical_target).parent.parent.exists()
             before_version_dir = software_tree_binary(canonical_target).parent.exists()
             before_executable, before_executable_mode = snapshot_optional_file(
-                mimo_executable(canonical_target), "MiMo Code executable"
+                mimo_executable(canonical_target),
+                "MiMo Code executable",
+                max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES,
             )
             before_tree, before_tree_mode = snapshot_optional_file(
-                software_tree_binary(canonical_target), "MiMo Code version tree executable"
+                software_tree_binary(canonical_target),
+                "MiMo Code version tree executable",
+                max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES,
             )
             before_manifest, before_manifest_mode = snapshot_optional_file(
-                software_manifest_path(canonical_target), "software manifest"
+                software_manifest_path(canonical_target),
+                "software manifest",
+                max_bytes=METADATA_MAX_BYTES,
             )
             asset_key, asset = selected_asset()
             url = asset.get("url")
@@ -1444,7 +1516,26 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
             )
             if sha256_bytes(archive_bytes) != expected_sha:
                 fail(f"downloaded MiMo Code digest mismatch for {asset_key}")
-            verified_binary = extract_verified_binary(archive_bytes, str(name))
+            archive_member_path, archive_member_mode, verified_binary = (
+                extract_verified_binary(archive_bytes, str(name))
+            )
+            executable_baseline = asset.get("executable")
+            if executable_baseline is not None:
+                if not isinstance(executable_baseline, dict):
+                    fail(f"baseline asset {asset_key} executable metadata is invalid")
+                expected_executable = {
+                    "path": archive_member_path,
+                    "archive_mode": f"{archive_member_mode:04o}",
+                    "installer_mode": (
+                        f"{OFFICIAL_INSTALLER_EXECUTABLE_MODE:04o}"
+                    ),
+                    "size": len(verified_binary),
+                    "sha256": sha256_bytes(verified_binary),
+                }
+                if executable_baseline != expected_executable:
+                    fail(
+                        f"downloaded MiMo Code executable metadata mismatch for {asset_key}"
+                    )
             installer, installer_sha, installer_source, installer_size = read_pinned_installer()
             artifact = run_official_installer(
                 installer, installer_source, installer_sha, verified_binary
@@ -1461,9 +1552,15 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
                 "asset_url": url,
                 "asset_size": expected_size,
                 "asset_sha256": expected_sha,
+                "archive_member_path": archive_member_path,
+                "archive_member_mode": f"{archive_member_mode:04o}",
+                "installer_binary_mode": artifact["installer_binary_mode"],
                 "installer_url": artifact["installer_source"],
                 "installer_size": installer_size,
                 "installer_sha256": artifact["installer_sha256"],
+                "binary_size": len(artifact["binary"]),
+                "binary_mode": f"{OWNER_EXECUTABLE_MODE:04o}",
+                "binary_max_bytes": SOFTWARE_EXECUTABLE_MAX_BYTES,
                 "binary_sha256": artifact["binary_sha256"],
                 "version_output": artifact["version_output"],
             }
@@ -1506,6 +1603,11 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
                             "asset_url",
                             "asset_sha256",
                             "asset_size",
+                            "archive_member_path",
+                            "archive_member_mode",
+                            "installer_binary_mode",
+                            "binary_size",
+                            "baseline_binary_sha256",
                             "installer_size",
                             "installer_url",
                             "installer_sha256",
@@ -1565,13 +1667,17 @@ def remove_cli(target: Path) -> dict[str, Any]:
         if not status["present"]:
             fail("remove-cli requires existing target-owned MiMo Code software presence")
         validate_safe_software_presence(canonical_target)
-        for path in (
-            mimo_executable(canonical_target),
-            software_tree_binary(canonical_target),
-            software_manifest_path(canonical_target),
+        for path, max_bytes in (
+            (mimo_executable(canonical_target), SOFTWARE_EXECUTABLE_MAX_BYTES),
+            (software_tree_binary(canonical_target), SOFTWARE_EXECUTABLE_MAX_BYTES),
+            (software_manifest_path(canonical_target), METADATA_MAX_BYTES),
         ):
             if path.exists() or path.is_symlink():
-                require_regular_file(path, f"software file {path.relative_to(canonical_target)}")
+                require_regular_file(
+                    path,
+                    f"software file {path.relative_to(canonical_target)}",
+                    max_bytes=max_bytes,
+                )
                 path.unlink()
         for directory in (
             software_tree_binary(canonical_target).parent,
@@ -1650,7 +1756,11 @@ def launch_mimo(target: Path, args: list[str]) -> int:
             fail("MiMo Code is not installed at the tested version in this target")
         child_args = list(state["launch_args"]) + args
         executable = mimo_executable(canonical_target)
-        require_regular_file(executable, "MiMo Code executable", max_bytes=DOWNLOAD_MAX_BYTES)
+        require_regular_file(
+            executable,
+            "MiMo Code executable",
+            max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES,
+        )
         child_env = isolated_child_environment(canonical_target)
     completed = subprocess.run(
         [str(executable), *child_args],

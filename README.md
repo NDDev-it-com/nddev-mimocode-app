@@ -55,6 +55,11 @@ python3 cli-tools/nddev_mimocode.py update-cli --target /absolute/target --json
 python3 cli-tools/nddev_mimocode.py remove-cli --target /absolute/target --json
 ```
 
+The staged executable remains size-bounded. Its verified upstream archive
+identity and executable metadata are owned by `references/mimocode-baseline.json`;
+the managed path, private mode, recorded digests, and protective bounds are
+declared by `config/nddev-contract.json` and revalidated by software status.
+
 Launch forwards stdio and the child exit code:
 
 ```bash

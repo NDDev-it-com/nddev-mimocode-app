@@ -19,6 +19,8 @@ EXPECTED = {
     "official_installer": "https://mimo.xiaomi.com/install",
     "official_installer_size": 15819,
     "official_installer_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
+    "archive_max_bytes": 268435456,
+    "executable_max_bytes": 134217728,
     "fds_latest": "0.1.9",
     "home_env": "MIMOCODE_HOME",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
@@ -236,6 +238,40 @@ def validate_versions(errors: list[str]) -> None:
             "software installer flags mismatch",
             errors,
         )
+        executable_policy = software.get("staged_executable_policy")
+        require(
+            isinstance(executable_policy, dict),
+            "staged executable policy missing",
+            errors,
+        )
+        if isinstance(executable_policy, dict):
+            require(
+                executable_policy.get("verified_asset_metadata")
+                == "references/mimocode-baseline.json:release.assets.darwin-arm64.executable",
+                "verified executable metadata owner mismatch",
+                errors,
+            )
+            require(
+                executable_policy.get("archive_max_bytes") == EXPECTED["archive_max_bytes"],
+                "archive size bound mismatch",
+                errors,
+            )
+            require(
+                executable_policy.get("executable_max_bytes")
+                == EXPECTED["executable_max_bytes"],
+                "executable size bound mismatch",
+                errors,
+            )
+            require(
+                executable_policy.get("official_installer_mode") == "0755",
+                "official installer executable mode mismatch",
+                errors,
+            )
+            require(
+                executable_policy.get("managed_mode") == "0700",
+                "managed executable mode mismatch",
+                errors,
+            )
     launch = contract.get("runtime_launch")
     require(isinstance(launch, dict), "contract runtime_launch missing", errors)
     if isinstance(launch, dict):
@@ -285,6 +321,22 @@ def validate_assets(errors: list[str]) -> None:
                     f"asset URL mismatch: {key}",
                     errors,
                 )
+                if key == "darwin-arm64":
+                    require(
+                        asset.get("executable")
+                        == {
+                            "path": "mimo",
+                            "archive_mode": "0755",
+                            "installer_mode": "0755",
+                            "size": 94571234,
+                            "sha256": (
+                                "faf477a3e0ec0ec1bef1b2fb692c2d9f"
+                                "dbba9a5864590deaa23e26b5694cb65f"
+                            ),
+                        },
+                        "darwin-arm64 executable metadata mismatch",
+                        errors,
+                    )
 
 
 def validate_permission_tree(value: Any, label: str, errors: list[str]) -> None:

@@ -25,7 +25,14 @@
         "name": "mimocode-darwin-arm64.zip",
         "size": 32411159,
         "sha256": "a46f1fc7f2a770d84ff5a3a731bc86ec54a3aa40ce22efd71e3c114f2b42ef83",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-arm64.zip"
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-arm64.zip",
+        "executable": {
+          "path": "mimo",
+          "archive_mode": "0755",
+          "installer_mode": "0755",
+          "size": 94571234,
+          "sha256": "faf477a3e0ec0ec1bef1b2fb692c2d9fdbba9a5864590deaa23e26b5694cb65f"
+        }
       },
       "darwin-x64-baseline": {
         "name": "mimocode-darwin-x64-baseline.zip",

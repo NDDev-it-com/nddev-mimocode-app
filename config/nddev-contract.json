@@ -92,6 +92,24 @@
     "installer_flags": ["--version", "0.1.9", "--no-modify-path", "--binary", "<verified-binary>"],
     "package_manager_install": null,
     "supported_platforms": ["macos", "linux", "windows"],
+    "staged_executable_policy": {
+      "verified_asset_metadata": "references/mimocode-baseline.json:release.assets.darwin-arm64.executable",
+      "archive_max_bytes": 268435456,
+      "executable_max_bytes": 134217728,
+      "official_installer_mode": "0755",
+      "managed_mode": "0700",
+      "preserved_identity": [
+        "asset_url",
+        "asset_sha256",
+        "archive_member_path",
+        "archive_member_mode",
+        "installer_binary_mode",
+        "binary_size",
+        "binary_sha256",
+        "binary_mode",
+        "binary_max_bytes"
+      ]
+    },
     "layout": {
       "visible_command": "bin/mimo",
       "version_tree": "software/versions/0.1.9/mimo",
