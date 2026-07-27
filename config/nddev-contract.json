@@ -107,6 +107,7 @@
       "verified_asset_metadata": "references/mimocode-baseline.json:release.assets.darwin-arm64.executable",
       "archive_max_bytes": 268435456,
       "executable_max_bytes": 134217728,
+      "staged_version_probe_timeout_seconds": 60,
       "official_installer_mode": "0755",
       "managed_mode": "0700",
       "preserved_identity": [

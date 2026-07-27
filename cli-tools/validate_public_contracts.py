@@ -34,6 +34,7 @@ EXPECTED = {
     "official_installer_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
     "archive_max_bytes": 268435456,
     "executable_max_bytes": 134217728,
+    "staged_version_probe_timeout_seconds": 60.0,
     "fds_latest": "0.1.9",
     "home_env": "MIMOCODE_HOME",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
@@ -283,6 +284,18 @@ def validate_versions(errors: list[str]) -> None:
                 executable_policy.get("executable_max_bytes")
                 == EXPECTED["executable_max_bytes"],
                 "executable size bound mismatch",
+                errors,
+            )
+            require(
+                executable_policy.get("staged_version_probe_timeout_seconds")
+                == EXPECTED["staged_version_probe_timeout_seconds"],
+                "staged version probe timeout mismatch",
+                errors,
+            )
+            require(
+                executable_policy.get("staged_version_probe_timeout_seconds")
+                == nddev_mimocode.STAGED_VERSION_PROBE_TIMEOUT_SECONDS,
+                "manager staged version probe timeout mismatch",
                 errors,
             )
             require(

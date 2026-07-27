@@ -56,6 +56,7 @@ MANAGED_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024
 DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
 SOFTWARE_EXECUTABLE_MAX_BYTES = 128 * 1024 * 1024
 PROCESS_TIMEOUT_SECONDS = 120
+STAGED_VERSION_PROBE_TIMEOUT_SECONDS = 60.0
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 MANAGED_CONFIG_KEYS = (
     "$schema",
@@ -1380,7 +1381,10 @@ def run_official_installer(
                 input="",
                 capture_output=True,
                 check=False,
-                timeout=internal_timeout_seconds(INTERNAL_PROBE_TIMEOUT_ENV, 15.0),
+                timeout=internal_timeout_seconds(
+                    INTERNAL_PROBE_TIMEOUT_ENV,
+                    STAGED_VERSION_PROBE_TIMEOUT_SECONDS,
+                ),
             )
         except FileNotFoundError as exc:
             fail(
