@@ -138,12 +138,22 @@ TOKEN_ENV_NAMES = {
 SAFE_CHILD_INHERITED_ENV_NAMES = (
     "CI",
     "COLORTERM",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
     "LANG",
     "LC_ALL",
     "LC_CTYPE",
+    "NODE_EXTRA_CA_CERTS",
     "NO_COLOR",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
     "SYSTEMROOT",
     "TERM",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
 )
 FORBIDDEN_LAUNCH_FLAGS = {
     "--dangerously-skip-permissions",

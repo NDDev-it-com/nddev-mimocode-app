@@ -42,12 +42,22 @@ EXPECTED = {
     "safe_child_env": [
         "CI",
         "COLORTERM",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
         "LANG",
         "LC_ALL",
         "LC_CTYPE",
+        "NODE_EXTRA_CA_CERTS",
         "NO_COLOR",
+        "NO_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
         "SYSTEMROOT",
         "TERM",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
     ],
 }
 SETUP_IDS = ["safe", "balanced", "full-auto"]
@@ -401,15 +411,26 @@ def validate_launch_environment_regression(errors: list[str]) -> None:
     safe_parent = {
         "CI": "1",
         "COLORTERM": "truecolor",
+        "HTTP_PROXY": "http://127.0.0.1:18080",
+        "HTTPS_PROXY": "http://127.0.0.1:18443",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "LC_CTYPE": "C.UTF-8",
+        "NODE_EXTRA_CA_CERTS": "/tmp/nddev-public-ca-node.pem",
         "NO_COLOR": "1",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "REQUESTS_CA_BUNDLE": "/tmp/nddev-public-ca-requests.pem",
+        "SSL_CERT_DIR": "/tmp/nddev-public-ca-dir",
+        "SSL_CERT_FILE": "/tmp/nddev-public-ca-file.pem",
         "SYSTEMROOT": "C:\\Windows",
         "TERM": "xterm-256color",
+        "http_proxy": "http://127.0.0.1:28080",
+        "https_proxy": "http://127.0.0.1:28443",
+        "no_proxy": "localhost,::1",
     }
     secret_parent = {
         "ANTHROPIC_API_KEY": sentinel,
+        "ARBITRARY_RUNTIME_SECRET": sentinel,
         "AWS_PROFILE": sentinel,
         "AWS_SECRET_ACCESS_KEY": sentinel,
         "AWS_SESSION_TOKEN": sentinel,
@@ -431,6 +452,7 @@ def validate_launch_environment_regression(errors: list[str]) -> None:
         "NPM_TOKEN": sentinel,
         "OPENAI_API_KEY": sentinel,
         "PATH": "/untrusted/bin",
+        "RANDOM_UNDECLARED_ENV": sentinel,
         "USERPROFILE": sentinel,
     }
     original_env = dict(os.environ)

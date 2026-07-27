@@ -72,8 +72,12 @@ permission policy and software updates stay bound to the managed target.
 
 The launched child receives isolated `HOME`, `USERPROFILE`, `MIMOCODE_HOME`,
 `MIMOCODE_CONFIG`, XDG directories, and temporary directory values under the
-target. Provider tokens and MiMo Code credential environment variables are
-stripped.
+target. Provider tokens, MiMo Code credential environment variables, and
+arbitrary parent environment are stripped. The only inherited parent values are
+the contract allowlist for terminal/locale state and non-secret connectivity or
+CA configuration (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`,
+`SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, plus lowercase
+proxy variants).
 
 ## Public validation
 
