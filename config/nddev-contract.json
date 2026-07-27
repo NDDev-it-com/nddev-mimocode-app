@@ -60,6 +60,17 @@
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
+    "environment_inheritance": "allowlist",
+    "safe_inherited_environment": [
+      "CI",
+      "COLORTERM",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "NO_COLOR",
+      "SYSTEMROOT",
+      "TERM"
+    ],
     "token_environment_inheritance": "stripped"
   },
   "command_policy": {

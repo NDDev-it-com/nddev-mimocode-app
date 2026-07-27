@@ -134,6 +134,16 @@ TOKEN_ENV_NAMES = {
     "SSH_AUTH_SOCK",
     "GIT_ASKPASS",
 }
+SAFE_CHILD_INHERITED_ENV_NAMES = (
+    "CI",
+    "COLORTERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "NO_COLOR",
+    "SYSTEMROOT",
+    "TERM",
+)
 FORBIDDEN_LAUNCH_FLAGS = {
     "--dangerously-skip-permissions",
     "--never-ask",
@@ -1696,6 +1706,8 @@ def isolated_child_environment(target: Path) -> dict[str, str]:
     for directory in (
         runtime,
         tmp,
+        runtime / "appdata",
+        runtime / "local-appdata",
         runtime / "xdg-config",
         runtime / "xdg-cache",
         runtime / "xdg-state",
@@ -1705,17 +1717,18 @@ def isolated_child_environment(target: Path) -> dict[str, str]:
         create_missing_directories(missing_directory_chain(directory))
         require_private_directory(directory, f"runtime directory {directory.relative_to(target)}")
     env: dict[str, str] = {}
-    for name, value in os.environ.items():
-        if name in TOKEN_ENV_NAMES:
-            continue
-        if name.startswith("MIMOCODE_") or name.startswith("MIMO_"):
-            continue
-        env[name] = value
+    for name in SAFE_CHILD_INHERITED_ENV_NAMES:
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
     env.update(
         {
+            "APPDATA": str(runtime / "appdata"),
             "HOME": str(target / "home"),
+            "LOCALAPPDATA": str(runtime / "local-appdata"),
             "USERPROFILE": str(target / "home"),
             "MIMOCODE_HOME": str(target),
+            "MIMOCODE_CONFIG_DIR": str(target / "config"),
             "MIMOCODE_CONFIG": str(target / "config" / "mimocode.json"),
             "MIMOCODE_DISABLE_AUTOUPDATE": "1",
             "MIMOCODE_DISABLE_LSP_DOWNLOAD": "1",
@@ -1723,6 +1736,9 @@ def isolated_child_environment(target: Path) -> dict[str, str]:
             "MIMOCODE_ENABLE_ANALYSIS": "false",
             "MIMOCODE_MIMO_ONLY": "true",
             "MIMOCODE_PURE": "1",
+            "SHELL": "/bin/sh",
+            "TEMP": str(tmp),
+            "TMP": str(tmp),
             "TMPDIR": str(tmp),
             "XDG_CONFIG_HOME": str(runtime / "xdg-config"),
             "XDG_CACHE_HOME": str(runtime / "xdg-cache"),

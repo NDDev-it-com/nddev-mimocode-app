@@ -3,13 +3,26 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-SEMVER = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+].*)?\Z")
+MANAGER_PATH = ROOT / "cli-tools" / "nddev_mimocode.py"
+MANAGER_SPEC = importlib.util.spec_from_file_location("nddev_mimocode", MANAGER_PATH)
+if MANAGER_SPEC is None or MANAGER_SPEC.loader is None:
+    raise RuntimeError(f"cannot load {MANAGER_PATH}")
+nddev_mimocode = importlib.util.module_from_spec(MANAGER_SPEC)
+sys.modules[MANAGER_SPEC.name] = nddev_mimocode
+MANAGER_SPEC.loader.exec_module(nddev_mimocode)
+SEMVER = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+].*)?\Z"
+)
 EXPECTED = {
     "version": "0.1.9",
     "release_tag": "v0.1.9",
@@ -25,6 +38,16 @@ EXPECTED = {
     "home_env": "MIMOCODE_HOME",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
     "config_file_env": "MIMOCODE_CONFIG",
+    "safe_child_env": [
+        "CI",
+        "COLORTERM",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "NO_COLOR",
+        "SYSTEMROOT",
+        "TERM",
+    ],
 }
 SETUP_IDS = ["safe", "balanced", "full-auto"]
 SHARED_CI_COMMIT = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
@@ -297,6 +320,27 @@ def validate_versions(errors: list[str]) -> None:
             "runtime launch guard mismatch",
             errors,
         )
+        require(
+            launch.get("environment_inheritance") == "allowlist",
+            "runtime environment inheritance mismatch",
+            errors,
+        )
+        require(
+            launch.get("safe_inherited_environment") == EXPECTED["safe_child_env"],
+            "runtime safe child env mismatch",
+            errors,
+        )
+        require(
+            tuple(launch.get("safe_inherited_environment", ()))
+            == nddev_mimocode.SAFE_CHILD_INHERITED_ENV_NAMES,
+            "manager safe child env mismatch",
+            errors,
+        )
+        require(
+            launch.get("token_environment_inheritance") == "stripped",
+            "runtime token inheritance mismatch",
+            errors,
+        )
 
 
 def validate_assets(errors: list[str]) -> None:
@@ -337,6 +381,124 @@ def validate_assets(errors: list[str]) -> None:
                         "darwin-arm64 executable metadata mismatch",
                         errors,
                     )
+
+
+def validate_launch_environment_regression(errors: list[str]) -> None:
+    sentinel = "nddev-public-regression-secret-value"
+    safe_parent = {
+        "CI": "1",
+        "COLORTERM": "truecolor",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "LC_CTYPE": "C.UTF-8",
+        "NO_COLOR": "1",
+        "SYSTEMROOT": "C:\\Windows",
+        "TERM": "xterm-256color",
+    }
+    secret_parent = {
+        "ANTHROPIC_API_KEY": sentinel,
+        "AWS_PROFILE": sentinel,
+        "AWS_SECRET_ACCESS_KEY": sentinel,
+        "AWS_SESSION_TOKEN": sentinel,
+        "CUSTOM_PROVIDER_TOKEN": sentinel,
+        "DATABASE_URL": sentinel,
+        "GEMINI_API_KEY": sentinel,
+        "GITHUB_TOKEN": sentinel,
+        "GOOGLE_API_KEY": sentinel,
+        "MIMO_ACCESS_TOKEN": sentinel,
+        "MIMO_API_KEY": sentinel,
+        "MIMO_FDS_BASE": sentinel,
+        "MIMOCODE_ACCESS_TOKEN": sentinel,
+        "MIMOCODE_API_KEY": sentinel,
+        "MIMOCODE_AUTH_CONTENT": sentinel,
+        "MIMOCODE_CONFIG": sentinel,
+        "MIMOCODE_CONFIG_DIR": sentinel,
+        "MIMOCODE_CONSOLE_TOKEN": sentinel,
+        "MIMOCODE_HOME": sentinel,
+        "NPM_TOKEN": sentinel,
+        "OPENAI_API_KEY": sentinel,
+        "PATH": "/untrusted/bin",
+        "USERPROFILE": sentinel,
+    }
+    original_env = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update({**safe_parent, **secret_parent})
+        with tempfile.TemporaryDirectory(prefix="nddev-mimocode-env-regression.") as raw:
+            target = Path(raw) / "target"
+            target.mkdir(mode=0o700)
+            target.chmod(0o700)
+            env = nddev_mimocode.isolated_child_environment(target)
+            fixed_names = {
+                "APPDATA",
+                "HOME",
+                "LOCALAPPDATA",
+                "MIMOCODE_CONFIG",
+                "MIMOCODE_CONFIG_DIR",
+                "MIMOCODE_DISABLE_AUTOUPDATE",
+                "MIMOCODE_DISABLE_LSP_DOWNLOAD",
+                "MIMOCODE_DISABLE_MODELS_FETCH",
+                "MIMOCODE_ENABLE_ANALYSIS",
+                "MIMOCODE_HOME",
+                "MIMOCODE_MIMO_ONLY",
+                "MIMOCODE_PURE",
+                "PATH",
+                "SHELL",
+                "TEMP",
+                "TMP",
+                "TMPDIR",
+                "USERPROFILE",
+                "XDG_CACHE_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+            }
+            allowed_names = set(EXPECTED["safe_child_env"]) | fixed_names
+            require(
+                set(env) <= allowed_names,
+                "launch env contains non-allowlisted names",
+                errors,
+            )
+            for name in safe_parent:
+                require(env.get(name) == safe_parent[name], f"safe env missing: {name}", errors)
+            for name in secret_parent:
+                require(
+                    name not in env or env[name] != sentinel,
+                    f"secret env leaked: {name}",
+                    errors,
+                )
+            require(sentinel not in env.values(), "sentinel secret value leaked", errors)
+            require(
+                env.get("PATH") == nddev_mimocode.SAFE_SYSTEM_PATH,
+                "launch PATH mismatch",
+                errors,
+            )
+            require(env.get("SHELL") == "/bin/sh", "launch SHELL mismatch", errors)
+            expected_paths = {
+                "APPDATA": target / "runtime" / "appdata",
+                "HOME": target / "home",
+                "LOCALAPPDATA": target / "runtime" / "local-appdata",
+                "MIMOCODE_CONFIG": target / "config" / "mimocode.json",
+                "MIMOCODE_CONFIG_DIR": target / "config",
+                "MIMOCODE_HOME": target,
+                "TEMP": target / "runtime" / "tmp",
+                "TMP": target / "runtime" / "tmp",
+                "TMPDIR": target / "runtime" / "tmp",
+                "USERPROFILE": target / "home",
+                "XDG_CACHE_HOME": target / "runtime" / "xdg-cache",
+                "XDG_CONFIG_HOME": target / "runtime" / "xdg-config",
+                "XDG_DATA_HOME": target / "runtime" / "xdg-data",
+                "XDG_STATE_HOME": target / "runtime" / "xdg-state",
+            }
+            for name, expected_path in expected_paths.items():
+                require(
+                    env.get(name) == str(expected_path),
+                    f"isolated launch path mismatch: {name}",
+                    errors,
+                )
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
 
 
 def validate_permission_tree(value: Any, label: str, errors: list[str]) -> None:
@@ -484,6 +646,7 @@ def main() -> int:
     errors: list[str] = []
     validate_versions(errors)
     validate_assets(errors)
+    validate_launch_environment_regression(errors)
     validate_setups(errors)
     validate_builder(errors)
     validate_public_identity(errors)
