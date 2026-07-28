@@ -443,7 +443,10 @@ def validate_versions(errors: list[str]) -> None:
         require("no-replace" in transaction.get("lock", ""), "anchor no-replace publication contract missing", errors)
         require(transaction.get("product_coordination_lock") == "persistent-product-global-lock-file", "product coordination lock contract mismatch", errors)
         require("cold no-anchor read" in transaction.get("read_only_cold_exception", ""), "cold read exception contract missing", errors)
+        require("final-path publication commit point" in transaction.get("published_anchor_rollback_exception", ""), "published anchor commit point missing", errors)
         require("monotonic rendezvous" in transaction.get("published_anchor_rollback_exception", ""), "published anchor rollback exception missing", errors)
+        require("same-dev-inode" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias recovery contract missing", errors)
+        require("unknown or multiple hardlinks fail closed" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias fail-closed contract missing", errors)
         require("absent targets do not create target-specific" in str(transaction.get("external_lock_persistent", "")), "command-accurate external lock persistence contract missing", errors)
         require("read-only inspection commands do not create" in str(transaction.get("internal_lock_persistent", "")), "read-only internal lock contract missing", errors)
         require(
@@ -1023,8 +1026,10 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
         path = pool / nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
         descriptor = nddev_mimocode.open_bootstrap_anchor_lock_file(path, "bootstrap product lock file")
         try:
+            nddev_mimocode.acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap product lock file")
             nddev_mimocode.validate_bootstrap_global_lock_binding(descriptor, path)
         finally:
+            nddev_mimocode.release_file_lock(descriptor)
             os.close(descriptor)
         require_no_bootstrap_temp(pool, label)
 
@@ -1033,6 +1038,7 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
         path = nddev_mimocode.bootstrap_lock_pool(canonical_target) / f"{nddev_mimocode.bootstrap_lock_key(canonical_target)}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}"
         descriptor = nddev_mimocode.open_bootstrap_anchor_lock_file(path, "bootstrap lifecycle lock file")
         try:
+            nddev_mimocode.acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap lifecycle lock file")
             nddev_mimocode.validate_bootstrap_lock_binding(
                 descriptor,
                 path,
@@ -1040,8 +1046,59 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                 nddev_mimocode.bootstrap_lock_key(canonical_target),
             )
         finally:
+            nddev_mimocode.release_file_lock(descriptor)
             os.close(descriptor)
         require_no_bootstrap_temp(path.parent, label)
+
+    def create_crashed_publication_alias(anchor_path: Path, publish: Any) -> None:
+        original_link = nddev_mimocode.os.link
+        original_cleanup = nddev_mimocode.cleanup_path_with_retries
+        linked = {"value": False}
+        injected = {"value": False}
+
+        def traced_link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+            result = original_link(source, destination, *args, **kwargs)
+            if Path(destination) == anchor_path:
+                linked["value"] = True
+            return result
+
+        def fail_temp_alias_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
+            if linked["value"] and not injected["value"] and nddev_mimocode.is_bootstrap_publication_alias(path, anchor_path):
+                injected["value"] = True
+                raise OSError("forced crash after final-path publication")
+            return original_cleanup(path, *args, **kwargs)
+
+        try:
+            nddev_mimocode.os.link = traced_link
+            nddev_mimocode.cleanup_path_with_retries = fail_temp_alias_cleanup
+            require_exception(
+                publish,
+                OSError,
+                "crash-after-link publication alias fault must propagate",
+                errors,
+            )
+        finally:
+            nddev_mimocode.os.link = original_link
+            nddev_mimocode.cleanup_path_with_retries = original_cleanup
+        require(linked["value"] and injected["value"], "crash-after-link publication alias fault was not exercised", errors)
+        info = anchor_path.lstat()
+        require(info.st_nlink == 2, "crash-after-link final anchor must retain one temp alias before recovery", errors)
+
+    def require_unknown_hardlink_fails(anchor_path: Path, open_and_recover: Any, label: str) -> None:
+        unknown = anchor_path.with_name(f".unknown-{anchor_path.name}.nddev.tmp.1.2")
+        os.link(anchor_path, unknown)
+        try:
+            require_exception(
+                open_and_recover,
+                nddev_mimocode.MiMoCodeSetupError,
+                f"{label} unknown hardlink must fail closed",
+                errors,
+            )
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                unknown.unlink()
+            with contextlib.suppress(OSError):
+                nddev_mimocode.fsync_directory_with_retries(anchor_path.parent, f"{label} unknown hardlink cleanup")
 
     def install_with_fault(target: Path, fault: str, *, target_only: bool) -> bool:
         original_open = nddev_mimocode.os.open
@@ -1166,6 +1223,64 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                 require(install_with_fault(target, fault, target_only=True), f"bootstrap target {fault} fault was not exercised", errors)
                 require(real_bootstrap_snapshot(pool) == before, f"bootstrap target {fault} fault mutated lock pool", errors)
                 require(not target.exists(), f"bootstrap target {fault} fault created target", errors)
+
+    with isolated_bootstrap_root(errors) as injected:
+        pool = bootstrap_product_root(injected)
+        pool.mkdir(mode=0o700)
+        pool.chmod(0o700)
+        global_anchor = pool / nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
+        create_crashed_publication_alias(
+            global_anchor,
+            lambda: nddev_mimocode.publish_bootstrap_global_lock_anchor(global_anchor),
+        )
+        require_global_anchor(pool, "bootstrap product crash recovery")
+        require(global_anchor.lstat().st_nlink == 1, "product crash recovery did not normalize final nlink", errors)
+        alias = global_anchor.with_name(f".{global_anchor.name}.nddev.tmp.123.456")
+        os.link(global_anchor, alias)
+        nddev_mimocode.publish_bootstrap_global_lock_anchor(global_anchor)
+        require(global_anchor.lstat().st_nlink == 1 and not nddev_mimocode.path_present(alias), "product EEXIST waiter did not recover publication alias", errors)
+        require_unknown_hardlink_fails(
+            global_anchor,
+            lambda: require_global_anchor(pool, "product unknown hardlink"),
+            "product anchor",
+        )
+        require(global_anchor.lstat().st_nlink == 1, "product unknown hardlink cleanup did not restore nlink", errors)
+
+    with isolated_bootstrap_root(errors) as injected:
+        with tempfile.TemporaryDirectory(prefix="nddev-mimocode-target-crash-recovery.") as raw:
+            root = Path(raw)
+            root.chmod(0o700)
+            target_parent = root / "targets"
+            target_parent.mkdir(mode=0o700)
+            target_parent.chmod(0o700)
+            target = target_parent / "target"
+            canonical_target = target_parent.resolve() / target.name
+            target_key = nddev_mimocode.bootstrap_lock_key(canonical_target)
+            pool = bootstrap_product_root(injected)
+            pool.mkdir(mode=0o700)
+            pool.chmod(0o700)
+            nddev_mimocode.ensure_bootstrap_global_lock_anchor(pool)
+            target_anchor = pool / f"{target_key}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}"
+            create_crashed_publication_alias(
+                target_anchor,
+                lambda: nddev_mimocode.publish_new_bootstrap_lock_binding(target_anchor, canonical_target, target_key),
+            )
+            require_target_anchor(target, "bootstrap target crash recovery")
+            require(target_anchor.lstat().st_nlink == 1, "target crash recovery did not normalize final nlink", errors)
+            alias = target_anchor.with_name(f".{target_anchor.name}.nddev.tmp.123.456")
+            os.link(target_anchor, alias)
+            descriptor = nddev_mimocode.publish_new_bootstrap_lock_binding(target_anchor, canonical_target, target_key)
+            try:
+                require(target_anchor.lstat().st_nlink == 1 and not nddev_mimocode.path_present(alias), "target EEXIST waiter did not recover publication alias", errors)
+            finally:
+                nddev_mimocode.release_file_lock(descriptor)
+                os.close(descriptor)
+            require_unknown_hardlink_fails(
+                target_anchor,
+                lambda: require_target_anchor(target, "target unknown hardlink"),
+                "target anchor",
+            )
+            require(target_anchor.lstat().st_nlink == 1, "target unknown hardlink cleanup did not restore nlink", errors)
 
     for fault in ("parent-fsync", "handoff"):
         with isolated_bootstrap_root(errors) as injected:

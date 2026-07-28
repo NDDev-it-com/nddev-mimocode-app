@@ -1450,19 +1450,58 @@ def validate_bootstrap_global_lock_binding(descriptor: int, path: Path) -> None:
         fail("bootstrap product lock file is bound to a different product")
 
 
-def cleanup_bootstrap_anchor_publication_aliases(path: Path, opened: os.stat_result, label: str) -> None:
-    if opened.st_nlink == 1:
+def is_bootstrap_publication_alias(path: Path, final_path: Path) -> bool:
+    prefix = f".{final_path.name}.nddev.tmp."
+    if not path.name.startswith(prefix):
+        return False
+    suffix = path.name[len(prefix) :]
+    parts = suffix.split(".")
+    return len(parts) == 2 and all(part.isdecimal() and part for part in parts)
+
+
+def require_bootstrap_anchor_path(path: Path, label: str, *, allow_publication_alias: bool) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        fail(f"{label} is missing")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail(f"{label} must be a regular non-symlink file")
+    if not is_owner_only_file(info):
+        fail(f"{label} must be owned by the current user with mode 0600")
+    if info.st_nlink == 1:
+        return info
+    if allow_publication_alias and info.st_nlink == 2:
+        return info
+    fail(f"{label} must not have unknown hard-link aliases")
+
+
+def recover_bootstrap_anchor_publication_alias(descriptor: int, path: Path, label: str) -> None:
+    opened = os.fstat(descriptor)
+    current = require_bootstrap_anchor_path(path, label, allow_publication_alias=True)
+    if identity_of(current) != identity_of(opened):
+        fail_concurrent(f"{label} changed while locked")
+    if current.st_nlink == 1:
         return
+    require_private_directory(path.parent, f"{label} parent")
+    matching_aliases: list[Path] = []
+    unknown_aliases: list[Path] = []
     for child in sorted(path.parent.iterdir(), key=lambda item: item.name):
-        if child == path or ".nddev.tmp." not in child.name:
+        if child == path:
             continue
-        with contextlib.suppress(FileNotFoundError):
+        try:
             child_info = child.lstat()
-            if identity_of(child_info) == identity_of(opened):
-                unlink_file_durable(child)
-    current = path.lstat()
-    if current.st_nlink != 1:
-        fail(f"{label} must not have hard-link aliases")
+        except FileNotFoundError:
+            continue
+        if identity_of(child_info) != identity_of(opened):
+            continue
+        if is_bootstrap_publication_alias(child, path):
+            matching_aliases.append(child)
+        else:
+            unknown_aliases.append(child)
+    if unknown_aliases or len(matching_aliases) != 1:
+        fail(f"{label} must have exactly one bounded publication alias before recovery")
+    unlink_file_durable(matching_aliases[0])
+    verify_locked_file_identity(descriptor, path, label)
 
 
 def open_bootstrap_anchor_lock_file(path: Path, label: str) -> int:
@@ -1485,8 +1524,9 @@ def open_bootstrap_anchor_lock_file(path: Path, label: str) -> int:
             fail(f"{label} must be a regular file")
         if not is_owner_only_file(opened):
             fail(f"{label} must be owned by the current user with mode 0600")
-        cleanup_bootstrap_anchor_publication_aliases(path, opened, label)
-        current = require_lock_file(path, label)
+        if opened.st_nlink not in {1, 2}:
+            fail(f"{label} must not have unknown hard-link aliases")
+        current = require_bootstrap_anchor_path(path, label, allow_publication_alias=True)
         refreshed = os.fstat(descriptor)
         if identity_of(current) != identity_of(refreshed):
             fail_concurrent(f"{label} changed while it was being opened")
@@ -1494,6 +1534,19 @@ def open_bootstrap_anchor_lock_file(path: Path, label: str) -> int:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def acquire_bootstrap_anchor_lock(descriptor: int, path: Path, label: str, *, shared: bool = False) -> None:
+    opened = os.fstat(descriptor)
+    locked_shared = shared and opened.st_nlink == 1
+    acquire_file_lock(descriptor, path, shared=locked_shared)
+    current = require_bootstrap_anchor_path(path, label, allow_publication_alias=True)
+    if shared and locked_shared and current.st_nlink != 1:
+        acquire_file_lock(descriptor, path)
+        locked_shared = False
+    recover_bootstrap_anchor_publication_alias(descriptor, path, label)
+    if shared and not locked_shared:
+        acquire_file_lock(descriptor, path, shared=True)
 
 
 def publish_bootstrap_anchor_no_replace(
@@ -1527,7 +1580,7 @@ def publish_bootstrap_anchor_no_replace(
             acquired = False
             os.close(descriptor)
             descriptor = open_bootstrap_anchor_lock_file(path, label)
-            acquire_file_lock(descriptor, path)
+            acquire_bootstrap_anchor_lock(descriptor, path, label)
             acquired = True
             result = descriptor
             descriptor = -1
@@ -1585,7 +1638,7 @@ def product_lifecycle_lock(path: Path, *, shared: bool = False) -> Iterator[None
     descriptor = open_bootstrap_anchor_lock_file(path, "bootstrap product lock file")
     acquired = False
     try:
-        acquire_file_lock(descriptor, path, shared=shared)
+        acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap product lock file", shared=shared)
         acquired = True
         validate_bootstrap_global_lock_binding(descriptor, path)
         yield
@@ -1754,7 +1807,7 @@ def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
                 marker_existed = path_present(path)
                 if marker_existed:
                     descriptor = open_bootstrap_anchor_lock_file(path, "bootstrap lifecycle lock file")
-                    acquire_file_lock(descriptor, path)
+                    acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap lifecycle lock file")
                     acquired = True
                     validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
                 else:
@@ -1800,7 +1853,7 @@ def bootstrap_inspection_coordination(target: Path) -> Iterator[Path]:
             except FileNotFoundError:
                 yield canonical_target
                 return
-            acquire_file_lock(descriptor, path, shared=True)
+            acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap lifecycle lock file", shared=True)
             acquired = True
             validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
         yield canonical_target
