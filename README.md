@@ -17,13 +17,16 @@ v0.1.9 uploaded runtime archive names and digests, plus the two generated
 source downloads reported by the GitHub release page, as vendor observation
 separate from the supported subset.
 For every target-bound command the supported-host preflight runs before target
-filesystem inspection; only lexical absolute-target validation precedes the
-external lifecycle coordination. The manager resolves target aliases under a
-product-wide external lock. Mutating commands publish and acquire a
-canonical-target external marker atomically; read-only `status`, `plan`, and
-`software-status` use an existing marker when one is present and otherwise
-stay on the product-held no-create path. Read-only commands create neither
-target-specific external markers nor target-internal lock state.
+filesystem inspection; only lexical absolute-target validation precedes
+external lifecycle coordination, except for the documented cold read-only
+case where no product anchor exists yet. Mutating commands publish a complete
+`global.lock` product anchor and canonical-target external marker with
+atomic no-replace binding, then use them as monotonic rendezvous files.
+Read-only `status`, `plan`, and `software-status` do not create anchors: a
+cold read uses a no-create path and retries if a concurrent mutation publishes
+`global.lock`, while a seeded read opens existing anchors no-follow/no-create.
+Read-only commands create neither target-specific external markers nor
+target-internal lock state.
 
 Managed launch and staged probes set manager-owned MiMo Code flags that disable
 project config discovery, Claude compatibility loaders, external skill scans,

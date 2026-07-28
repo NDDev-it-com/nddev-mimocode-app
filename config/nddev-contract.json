@@ -150,13 +150,16 @@
     "managed_file_mode": "0600",
     "managed_directory_mode": "0700",
     "new_target_mode": "0700",
-    "lock": "product-wide external coordination for canonicalization; mutating commands atomically publish and acquire a persistent canonical-target external bootstrap flock; read-only inspection uses existing canonical bootstrap lock when present or a product-held no-create path when absent; target-internal flock is persistent only for mutating lifecycle commands",
-    "product_coordination_lock": "fixed-system-temp-root-directory-flock",
-    "external_lock_root": "fixed-system-temp-root-product-uid marker pool for mutating target commands and pre-existing read-only markers",
+    "lock": "persistent product global.lock handoff for canonicalization; mutating commands atomically publish no-replace and acquire a persistent canonical-target external bootstrap flock; read-only inspection uses existing canonical bootstrap lock when present or a product-held no-create path when absent; target-internal flock is persistent only for mutating lifecycle commands",
+    "product_coordination_lock": "persistent-product-global-lock-file",
+    "external_lock_root": "fixed-system-temp-root-product-uid marker pool containing monotonic global.lock plus mutating target-command canonical markers and pre-existing read-only markers",
     "external_lock_persistent": {
+      "product_anchor": "monotonic global.lock once durably published by mutation; read-only cold path must not create it",
       "mutating_target_commands": true,
-      "read_only_status_plan_software_status": "uses existing marker when present; absent targets do not create target-specific external markers"
+      "read_only_status_plan_software_status": "cold no-anchor reads create no anchors; seeded reads use existing global.lock and existing target marker when present; absent targets do not create target-specific external markers"
     },
+    "read_only_cold_exception": "cold no-anchor read is the only target-observation exception before external coordination; it double-checks product anchor absence and retries under the anchor if a concurrent mutation publishes one",
+    "published_anchor_rollback_exception": "complete validated product and canonical target anchors are monotonic rendezvous objects after durable no-replace publication and are never unlinked by ordinary lifecycle cleanup or rollback",
     "internal_lock_persistent": "mutating commands only; read-only inspection commands do not create target-internal lock graph",
     "lock_order": [
       "product-wide-external-coordination",
