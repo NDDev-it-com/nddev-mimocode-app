@@ -13,6 +13,17 @@
   ],
   "default_setup_id": "nddev-builder",
   "default_profile_id": "full-auto",
+  "setup_lifecycle": [
+    "list",
+    "status",
+    "plan",
+    "install",
+    "update",
+    "switch",
+    "migrate",
+    "restore",
+    "remove"
+  ],
   "managed_files_source": "cli-tools/nddev_mimocode.py:MANAGED_PATHS",
   "permission_policy": {
     "configuration_surface": "native mimocode.json permission plus manager-owned profile launch environment",

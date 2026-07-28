@@ -32,11 +32,18 @@ inside that managed config directory are also rejected before launch.
 python3 cli-tools/nddev_mimocode.py list --json
 python3 cli-tools/nddev_mimocode.py plan --target /absolute/target --json
 python3 cli-tools/nddev_mimocode.py install --target /absolute/target --json
+python3 cli-tools/nddev_mimocode.py update --target /absolute/target --json
 python3 cli-tools/nddev_mimocode.py switch --profile safe --target /absolute/target --json
 python3 cli-tools/nddev_mimocode.py migrate --target /absolute/target --json
 python3 cli-tools/nddev_mimocode.py restore --backup 0 --target /absolute/target --json
 python3 cli-tools/nddev_mimocode.py remove --target /absolute/target --json
 ```
+
+`update` is the setup-content update command. It reconciles an existing
+managed target to the current module build for the target's recorded setup and
+profile, creates a backup only when managed files change, verifies exact
+postconditions, and is a true no-op when the target is already current.
+Target-owned MiMo Code software updates use `update-cli` instead.
 
 Target-owned software lifecycle:
 

@@ -1911,7 +1911,7 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
     with locked_new_or_existing_target(target) as canonical_target:
         state = inspect_target(canonical_target)
         if state["state"] == "legacy-managed":
-            fail("legacy managed target must be migrated before install or switch")
+            fail("legacy managed target must be migrated before install, update, or switch")
         existing_config = read_existing_config_if_managed(canonical_target, state)
         metadata, desired = render_setup(setup_id, profile_id, existing_config=existing_config)
         stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
@@ -1949,6 +1949,56 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
         "changed": changed,
         "backup_slot": backup_slot,
         "state": post["state"],
+    }
+
+
+def update_setup(target: Path) -> dict[str, Any]:
+    with locked_existing_target(target) as canonical_target:
+        state = inspect_target(canonical_target)
+        if state["state"] == "legacy-managed":
+            fail("legacy managed target must be migrated before update")
+        if state["state"] != "managed":
+            fail("update requires an existing managed target")
+        profile_id = state.get("profile_id")
+        if not isinstance(profile_id, str):
+            fail("managed target is missing a profile_id")
+        existing_config = read_existing_config_if_managed(canonical_target, state)
+        metadata, desired = render_setup(state["setup_id"], profile_id, existing_config=existing_config)
+        stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
+        desired[Path(STAMP_NAME)] = canonical_json(stamp)
+        changed = changed_paths(canonical_target, desired)
+        snapshot = current_managed_snapshot(canonical_target)
+        backup_before: dict[str, tuple[str, int, str | None]] | None = None
+        backup_recovery: Path | None = None
+        staged_backup: Path | None = None
+        backup_slot: int | None = None
+        try:
+            if changed:
+                backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
+                replace_managed_state(canonical_target, desired, expected_before=snapshot)
+            post = inspect_target(canonical_target)
+            if changed:
+                verify_managed_state(canonical_target, desired, "update postcondition")
+            if staged_backup is not None and backup_before is not None:
+                backup_slot = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                staged_backup = None
+                backup_recovery = None
+        except BaseException:
+            restore_snapshot(canonical_target, snapshot)
+            if backup_before is not None:
+                rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            raise
+    return {
+        "ok": True,
+        "operation": "update",
+        "setup_id": state["setup_id"],
+        "profile_id": profile_id,
+        "description": metadata["description"],
+        "target": str(canonical_target),
+        "changed": changed,
+        "backup_slot": backup_slot,
+        "state": post["state"],
+        "needs_update": post.get("needs_update"),
     }
 
 
@@ -2025,7 +2075,7 @@ def plan_setup(target: Path, setup_id: str, profile_id: str) -> dict[str, Any]:
             stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
             desired[Path(STAMP_NAME)] = canonical_json(stamp)
             changed = changed_paths(canonical_target, desired)
-            operation = "switch" if state.get("setup_id") != setup_id or state.get("profile_id") != profile_id else "install"
+            operation = "switch" if state.get("setup_id") != setup_id or state.get("profile_id") != profile_id else "update"
             backup_required = bool(changed)
         elif state["state"] == "legacy-managed":
             _selected_profile, migration_desired = render_legacy_migration_desired(canonical_target, state, profile_id)
@@ -3085,6 +3135,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         add_setup_profile_arguments(command_parser)
         add_target_argument(command_parser)
         add_json_argument(command_parser)
+    update_parser = subparsers.add_parser("update", help="update the current managed setup/profile")
+    add_target_argument(update_parser)
+    add_json_argument(update_parser)
     migrate_parser = subparsers.add_parser("migrate", help="migrate a legacy managed target")
     migrate_parser.add_argument("--profile")
     add_target_argument(migrate_parser)
@@ -3141,6 +3194,10 @@ def run(args: argparse.Namespace) -> int:
     if args.command in {"install", "switch"}:
         target = require_absolute_target_argument(args.target)
         print_payload(mutate_setup(target, args.setup, args.profile, args.command), json_output=args.json)
+        return 0
+    if args.command == "update":
+        target = require_absolute_target_argument(args.target)
+        print_payload(update_setup(target), json_output=args.json)
         return 0
     if args.command == "migrate":
         target = require_absolute_target_argument(args.target)

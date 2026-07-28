@@ -31,6 +31,10 @@ MANAGER_SPEC.loader.exec_module(nddev_mimocode)
 SEMVER = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+].*)?\Z")
 SETUP_IDS = ["nddev-builder"]
 PROFILE_IDS = ["full-auto", "safe"]
+SETUP_LIFECYCLE = ["list", "status", "plan", "install", "update", "switch", "migrate", "restore", "remove"]
+FULL_LIFECYCLE = [*SETUP_LIFECYCLE, "software-status", "install-cli", "update-cli", "remove-cli", "launch"]
+JSON_COMMANDS = [command for command in FULL_LIFECYCLE if command != "launch"]
+TARGET_COMMANDS = [command for command in FULL_LIFECYCLE if command != "list"]
 SHARED_CI_COMMIT = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
 SHARED_CI_VERSION = "0.12.0"
 SHARED_CALLERS = {
@@ -400,6 +404,11 @@ def validate_versions(errors: list[str]) -> None:
         require(transaction.get("restore_removes_known_managed_paths_absent_from_backup") is True, "restore deletion contract missing", errors)
         require(transaction.get("restore_unknown_backup_paths") == "fail-closed", "restore unknown-path contract mismatch", errors)
         require(transaction.get("backup_file_records") == "path-size-sha256", "backup file record contract mismatch", errors)
+        require(transaction.get("setup_update_command") == "update", "setup update command contract missing", errors)
+        require("update-cli" in transaction.get("setup_update_scope", ""), "setup update/software update separation missing", errors)
+        require("true no-op" in transaction.get("setup_update_noop", ""), "setup update no-op contract missing", errors)
+        require("only when update changes" in transaction.get("setup_update_backup", ""), "setup update backup contract missing", errors)
+        require("exact desired managed bytes" in transaction.get("setup_update_postcondition", ""), "setup update postcondition contract missing", errors)
     software = contract.get("software_install")
     require(isinstance(software, dict), "contract software_install missing", errors)
     if isinstance(software, dict):
@@ -538,12 +547,22 @@ def validate_setup_profiles(errors: list[str]) -> None:
     contract = read_json("config/nddev-contract.json")
     require(manifest.get("setup_ids") == SETUP_IDS, "manifest setup ids mismatch", errors)
     require(manifest.get("profile_ids") == PROFILE_IDS, "manifest profile ids mismatch", errors)
+    require(manifest.get("setup_lifecycle") == SETUP_LIFECYCLE, "manifest setup lifecycle mismatch", errors)
     setup_system = contract.get("setup_system")
     require(isinstance(setup_system, dict), "contract setup_system missing", errors)
     if isinstance(setup_system, dict):
         require(setup_system.get("setup_ids") == SETUP_IDS, "contract setup ids mismatch", errors)
         require(setup_system.get("profile_ids") == PROFILE_IDS, "contract profile ids mismatch", errors)
         require(setup_system.get("default_profile_id") == nddev_mimocode.DEFAULT_PROFILE_ID, "default profile mismatch", errors)
+        require(setup_system.get("lifecycle") == FULL_LIFECYCLE, "contract setup lifecycle mismatch", errors)
+    command_policy = contract.get("command_policy")
+    require(isinstance(command_policy, dict), "contract command_policy missing", errors)
+    if isinstance(command_policy, dict):
+        require(command_policy.get("json_supported") == JSON_COMMANDS, "command JSON support mismatch", errors)
+        require(command_policy.get("target_required") == TARGET_COMMANDS, "target command list mismatch", errors)
+    update_args = nddev_mimocode.parse_args(["update", "--target", "/tmp/nddev-mimocode-target", "--json"])
+    require(update_args.command == "update", "update parser command mismatch", errors)
+    require(not hasattr(update_args, "setup") and not hasattr(update_args, "profile"), "setup update must not accept setup/profile arguments", errors)
     listed = nddev_mimocode.list_setups()
     profiles = nddev_mimocode.list_profiles()
     require([item["id"] for item in listed] == SETUP_IDS, "manager setup list mismatch", errors)
@@ -973,6 +992,33 @@ def validate_transaction_faults(errors: list[str]) -> None:
             require(result.get("changed") == [], "managed no-op must report no changed paths", errors)
             require(managed_identity_snapshot(target) == before_managed_identity, "managed no-op changed file identity", errors)
             require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "managed no-op changed backup state", errors)
+            update_plan = nddev_mimocode.plan_setup(target, "nddev-builder", "full-auto")
+            require(update_plan.get("operation") == "update", "managed current plan must route to setup update", errors)
+            require(update_plan.get("changed") == [], "managed current update plan must be a no-op", errors)
+            update_result = nddev_mimocode.update_setup(target)
+            require(update_result.get("operation") == "update", "setup update operation mismatch", errors)
+            require(update_result.get("changed") == [], "setup update no-op must report no changed paths", errors)
+            require(update_result.get("backup_slot") is None, "setup update no-op must not rotate backups", errors)
+            require(update_result.get("needs_update") is False, "setup update no-op must report current state", errors)
+            require(managed_identity_snapshot(target) == before_managed_identity, "setup update no-op changed file identity", errors)
+            require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "setup update no-op changed backup state", errors)
+            require_manager_failure(lambda: nddev_mimocode.update_setup(root / "missing-update"), "setup update must reject missing targets", errors)
+
+            target = make_managed_target(root / "update-needed")
+            stamp_path = target / nddev_mimocode.STAMP_NAME
+            stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+            stamp["build_version"] = "0.1.0"
+            stamp_path.write_bytes(nddev_mimocode.canonical_json(stamp))
+            stamp_path.chmod(0o600)
+            require(nddev_mimocode.inspect_target(target).get("needs_update") is True, "setup update fixture must need update", errors)
+            before_backup = nddev_mimocode.backup_pool_snapshot(target)
+            update_result = nddev_mimocode.update_setup(target)
+            require(update_result.get("operation") == "update", "setup update changed operation mismatch", errors)
+            require(update_result.get("changed") == [nddev_mimocode.STAMP_NAME], "setup update should change only the stale stamp", errors)
+            require(update_result.get("backup_slot") == 0, "setup update with changes must create backup", errors)
+            require(update_result.get("needs_update") is False, "setup update did not clear needs_update", errors)
+            require(nddev_mimocode.backup_pool_snapshot(target) != before_backup, "setup update with changes did not advance backup state", errors)
+            require_no_transaction_residue(target, "setup update with changes left residue", errors)
 
             for label, patch_name in (("write", "write"), ("fchmod", "fchmod")):
                 target = make_managed_target(root / label)
@@ -1477,6 +1523,7 @@ def validate_state_transition_helpers(errors: list[str]) -> None:
         with tempfile.TemporaryDirectory(prefix="nddev-mimocode-legacy-plan.") as raw:
             target = make_legacy_target(Path(raw))
             before_snapshot = nddev_mimocode.current_managed_snapshot(target)
+            require_manager_failure(lambda: nddev_mimocode.update_setup(target), "setup update must reject legacy managed targets before migrate", errors)
             plan = nddev_mimocode.plan_setup(target, "nddev-builder", "safe")
             after_plan_snapshot = nddev_mimocode.current_managed_snapshot(target)
             require(after_plan_snapshot == before_snapshot, "legacy plan must not mutate managed state", errors)
