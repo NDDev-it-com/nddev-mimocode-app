@@ -460,8 +460,20 @@ def cleanup_transaction_residue(target: Path) -> None:
             cleanup_path_with_retries(path)
 
 
+def is_transaction_residue_path(path: Path) -> bool:
+    return any(
+        ".nddev.tmp." in part
+        or ".stage." in part
+        or ".rollback." in part
+        or ".retired." in part
+        or ".recovery." in part
+        for part in path.parts
+    )
+
+
 FileObjectRecord = dict[str, Any]
 FileObjectSnapshot = dict[Path, FileObjectRecord]
+DirectoryObjectSnapshot = dict[Path, dict[str, Any]]
 
 
 def absent_file_object() -> FileObjectRecord:
@@ -522,6 +534,45 @@ def verify_file_object_snapshot(
             fail_concurrent(f"{label} did not restore exact file object: {relative}")
 
 
+def directory_object_snapshot(target: Path) -> DirectoryObjectSnapshot:
+    if not path_present(target):
+        return {}
+    require_directory(target, "directory snapshot target")
+    result: DirectoryObjectSnapshot = {}
+    directories = [
+        item
+        for item in target.rglob("*")
+        if item.is_dir() and not item.is_symlink() and not is_transaction_residue_path(item.relative_to(target))
+    ]
+    for path in [target, *sorted(directories, key=lambda entry: str(entry.relative_to(target)))]:
+        info = path.lstat()
+        relative = Path(".") if path == target else path.relative_to(target)
+        result[relative] = {
+            "mode": stat.S_IMODE(info.st_mode),
+            "dev": info.st_dev,
+            "ino": info.st_ino,
+            "mtime_ns": info.st_mtime_ns,
+        }
+    return result
+
+
+def restore_directory_object_snapshot(target: Path, snapshot: DirectoryObjectSnapshot, label: str) -> None:
+    for relative, record in sorted(snapshot.items(), key=lambda item: len(item[0].parts), reverse=True):
+        path = target if relative == Path(".") else target / relative
+        info = require_directory(path, f"{label} directory {relative}")
+        if info.st_dev != record["dev"] or info.st_ino != record["ino"]:
+            fail_concurrent(f"{label} directory identity changed: {relative}")
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != record["mode"]:
+            path.chmod(record["mode"])
+        current = path.lstat()
+        if current.st_mtime_ns != record["mtime_ns"]:
+            os.utime(path, ns=(current.st_atime_ns, record["mtime_ns"]))
+        fsync_directory_with_retries(path, f"{label} directory fsync {relative}")
+    if path_present(target):
+        fsync_directory_with_retries(target, f"{label} target directory after metadata restore")
+
+
 class FileUndoTransaction:
     def __init__(
         self,
@@ -537,6 +588,7 @@ class FileUndoTransaction:
         self.label = label
         self.owner_only_for = owner_only_for
         self.max_bytes_for = max_bytes_for
+        self.before_directories = directory_object_snapshot(target)
         self.undo_root = target / f".nddev-mimocode.rollback.{os.getpid()}.{time.time_ns()}"
         self.records: dict[Path, Path | None] = {}
 
@@ -614,6 +666,7 @@ class FileUndoTransaction:
             max_bytes_for=self.max_bytes_for,
         )
         cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
+        restore_directory_object_snapshot(self.target, self.before_directories, self.label)
 
     def rollback(self) -> None:
         last: BaseException | None = None
@@ -2187,6 +2240,7 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
         desired[Path(STAMP_NAME)] = canonical_json(stamp)
         changed = changed_paths(canonical_target, desired)
         backup_slot: int | None = None
+        lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target)
         snapshot_payload = managed_payload_snapshot(snapshot)
         managed_undo: FileUndoTransaction | None = None
@@ -2219,6 +2273,7 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
                 restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
             raise
     return {
         "ok": True,
@@ -2248,6 +2303,7 @@ def update_setup(target: Path) -> dict[str, Any]:
         stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
         desired[Path(STAMP_NAME)] = canonical_json(stamp)
         changed = changed_paths(canonical_target, desired)
+        lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target)
         snapshot_payload = managed_payload_snapshot(snapshot)
         managed_undo: FileUndoTransaction | None = None
@@ -2280,6 +2336,7 @@ def update_setup(target: Path) -> dict[str, Any]:
                 restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
             raise
     return {
         "ok": True,
@@ -2330,6 +2387,7 @@ def migrate_setup(target: Path, profile_id: str | None) -> dict[str, Any]:
             fail("migrate requires a legacy managed target")
         selected_profile, desired = render_legacy_migration_desired(canonical_target, state, profile_id)
         changed = changed_paths(canonical_target, desired)
+        lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target)
         snapshot_payload = managed_payload_snapshot(snapshot)
         managed_undo: FileUndoTransaction | None = None
@@ -2358,6 +2416,7 @@ def migrate_setup(target: Path, profile_id: str | None) -> dict[str, Any]:
                 restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
             raise
     return {
         "ok": True,
@@ -2409,6 +2468,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
         if state["state"] not in {"managed", "legacy-managed"}:
             fail("target is not managed by nddev-mimocode-app")
         paths = ALL_MANAGED_PATHS if state["state"] == "legacy-managed" else MANAGED_PATHS
+        lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target, paths)
         snapshot_payload = managed_payload_snapshot(snapshot)
         desired = {relative: None for relative in paths}
@@ -2437,6 +2497,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
                 restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
             raise
     return {
         "ok": True,
@@ -2455,6 +2516,7 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
             fail("target is not managed by nddev-mimocode-app")
         envelope, files = load_backup(canonical_target, slot)
         desired = restore_desired_from_backup(files)
+        lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target)
         snapshot_payload = managed_payload_snapshot(snapshot)
         managed_undo: FileUndoTransaction | None = None
@@ -2473,6 +2535,7 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
                 managed_undo.rollback()
             else:
                 restore_snapshot(canonical_target, snapshot)
+            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
             raise
     return {
         "ok": True,
