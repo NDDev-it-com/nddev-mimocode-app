@@ -486,6 +486,7 @@ FileObjectRecord = dict[str, Any]
 FileObjectSnapshot = dict[Path, FileObjectRecord]
 DirectoryObjectSnapshot = dict[Path, dict[str, Any]]
 DirectoryMetadataRecord = dict[str, int]
+BootstrapPoolState = tuple[Path, bool, DirectoryMetadataRecord, DirectoryMetadataRecord]
 
 
 def absent_file_object() -> FileObjectRecord:
@@ -723,6 +724,76 @@ class FileUndoTransaction:
         )
         cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
         restore_directory_object_snapshot(self.target, self.before_directories, self.label)
+
+    def rollback(self) -> None:
+        last: BaseException | None = None
+        for _attempt in range(3):
+            try:
+                self.rollback_once()
+                return
+            except BaseException as exc:
+                last = exc
+        if last is not None:
+            raise last
+
+    def commit_cleanup(self) -> None:
+        cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
+
+
+class DirectoryUndoTransaction:
+    def __init__(self, target: Path, *, label: str) -> None:
+        self.target = target
+        self.label = label
+        self.undo_root = target / f".nddev-mimocode.dir-rollback.{os.getpid()}.{time.time_ns()}"
+        self.records: dict[Path, Path] = {}
+
+    def _undo_path(self, relative: Path) -> Path:
+        return self.undo_root / str(len(self.records)) / relative
+
+    def _ensure_undo_parent(self, undo_path: Path) -> None:
+        undo_relative = undo_path.parent.relative_to(self.target)
+        ensure_private_directory_under_target(self.target, undo_relative, "directory rollback parent")
+
+    def hold_empty(self, relative: Path) -> bool:
+        if relative in self.records:
+            return True
+        path = self.target / relative
+        if not path_present(path):
+            return False
+        require_private_directory(path, f"{self.label} directory {relative}")
+        try:
+            next(path.iterdir())
+        except StopIteration:
+            pass
+        except FileNotFoundError:
+            return False
+        else:
+            fail(f"{self.label} directory is not empty: {relative}")
+        undo_path = self._undo_path(relative)
+        self._ensure_undo_parent(undo_path)
+        self.records[relative] = undo_path
+        os.replace(path, undo_path)
+        fsync_directory_with_retries(path.parent, f"parent directory after holding {relative}")
+        fsync_directory_with_retries(undo_path.parent, f"directory rollback parent after holding {relative}")
+        return True
+
+    def rollback_once(self) -> None:
+        for relative in reversed(list(self.records)):
+            path = self.target / relative
+            undo_path = self.records[relative]
+            if path_present(path):
+                current = path.lstat()
+                if stat.S_ISDIR(current.st_mode) and not stat.S_ISLNK(current.st_mode):
+                    cleanup_path_with_retries(path, raise_on_failure=True)
+                else:
+                    fail_concurrent(f"{self.label} rollback found non-directory at {relative}")
+            ensure_private_directory_under_target(self.target, relative.parent, "directory rollback restore parent")
+            if not path_present(undo_path):
+                fail_concurrent(f"{self.label} directory rollback material is missing: {relative}")
+            os.replace(undo_path, path)
+            fsync_directory_with_retries(path.parent, f"parent directory after directory rollback restore {relative}")
+            fsync_directory_with_retries(undo_path.parent, f"directory rollback parent after restore {relative}")
+        cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
 
     def rollback(self) -> None:
         last: BaseException | None = None
@@ -1306,23 +1377,51 @@ def canonical_target_for_bootstrap_lock(target: Path) -> Path:
     return target.resolve()
 
 
-def ensure_bootstrap_lock_pool(canonical_target: Path) -> Path:
+def ensure_bootstrap_lock_pool_state(canonical_target: Path) -> BootstrapPoolState:
+    root = fixed_system_temp_root()
+    parent_record = directory_metadata_record(root, "bootstrap lifecycle lock pool parent")
     pool = bootstrap_lock_pool(canonical_target)
+    existed_before = True
     try:
         info = pool.lstat()
     except FileNotFoundError:
+        existed_before = False
         try:
             pool.mkdir(mode=OWNER_DIRECTORY_MODE)
         except FileExistsError:
+            existed_before = True
             info = pool.lstat()
         else:
             pool.chmod(OWNER_DIRECTORY_MODE)
+            fsync_directory_with_retries(pool.parent, "bootstrap lifecycle lock pool parent after create")
             info = pool.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail("bootstrap lifecycle lock pool must be a real directory")
     if not is_owner_private_directory(info):
         fail("bootstrap lifecycle lock pool must be owned by the current user with mode 0700")
+    return pool, existed_before, parent_record, directory_metadata_record(pool, "bootstrap lifecycle lock pool")
+
+
+def ensure_bootstrap_lock_pool(canonical_target: Path) -> Path:
+    pool, _existed_before, _parent_record, _pool_record = ensure_bootstrap_lock_pool_state(canonical_target)
     return pool
+
+
+def restore_bootstrap_lock_pool_state(
+    pool: Path,
+    *,
+    existed_before: bool,
+    parent_record: DirectoryMetadataRecord,
+    pool_record: DirectoryMetadataRecord,
+    label: str,
+) -> None:
+    if existed_before:
+        restore_directory_metadata_record(pool, pool_record, f"{label} bootstrap lock pool")
+    else:
+        cleanup_path_with_retries(pool, raise_on_failure=True)
+        if path_present(pool):
+            fail_concurrent(f"{label} left newly-created bootstrap lock pool")
+    restore_directory_metadata_record(pool.parent, parent_record, f"{label} bootstrap lock pool parent")
 
 
 @contextlib.contextmanager
@@ -1406,16 +1505,6 @@ def read_lock_file_descriptor(descriptor: int, *, label: str) -> bytes:
         fail(f"cannot read {label}: {exc}")
 
 
-def write_lock_file_descriptor(descriptor: int, content: bytes, *, label: str) -> None:
-    try:
-        os.ftruncate(descriptor, 0)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        os.write(descriptor, content)
-        os.fchmod(descriptor, OWNER_FILE_MODE)
-    except OSError as exc:
-        fail(f"cannot write {label}: {exc}")
-
-
 def acquire_file_lock(descriptor: int, path: Path) -> None:
     if fcntl is None:
         fail("target lifecycle locks require POSIX fcntl.flock")
@@ -1458,30 +1547,135 @@ def validate_bootstrap_lock_binding(descriptor: int, path: Path, canonical_targe
     desired = bootstrap_lock_binding(canonical_target, target_key)
     content = read_lock_file_descriptor(descriptor, label="bootstrap lifecycle lock file")
     if not content:
-        write_lock_file_descriptor(descriptor, canonical_json(desired), label="bootstrap lifecycle lock file")
-        verify_locked_file_identity(descriptor, path, "bootstrap lifecycle lock file")
-        return
+        fail("bootstrap lifecycle lock file is empty")
     binding = parse_json_object(content, "bootstrap lifecycle lock file")
     require_exact_keys(binding, BOOTSTRAP_LOCK_KEYS, "bootstrap lifecycle lock file")
     if binding != desired:
         fail("bootstrap lifecycle lock file is bound to a different canonical target")
 
 
+def publish_new_bootstrap_lock_binding(path: Path, canonical_target: Path, target_key: str) -> int:
+    desired = canonical_json(bootstrap_lock_binding(canonical_target, target_key))
+    temporary = staged_file_path(path)
+    descriptor = -1
+    acquired = False
+    published = False
+    try:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, OWNER_FILE_MODE)
+        os.fchmod(descriptor, OWNER_FILE_MODE)
+        write_all(descriptor, desired)
+        os.fsync(descriptor)
+        acquire_file_lock(descriptor, temporary)
+        acquired = True
+        os.replace(temporary, path)
+        published = True
+        fsync_directory_with_retries(path.parent, "bootstrap lifecycle lock pool after binding publish")
+        verify_locked_file_identity(descriptor, path, "bootstrap lifecycle lock file")
+        if read_lock_file_descriptor(descriptor, label="bootstrap lifecycle lock file") != desired:
+            fail_concurrent("bootstrap lifecycle lock file binding changed during publication")
+        return descriptor
+    except BaseException:
+        if published:
+            cleanup_path_with_retries(path, raise_on_failure=True)
+        else:
+            cleanup_path_with_retries(temporary)
+        if acquired:
+            release_file_lock(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
 @contextlib.contextmanager
 def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
     if not target.is_absolute():
         fail("--target must be an absolute path")
-    pool = ensure_bootstrap_lock_pool(target)
+    root = fixed_system_temp_root()
+    pool: Path | None = None
+    pool_existed = True
+    parent_record: DirectoryMetadataRecord | None = None
+    pool_record: DirectoryMetadataRecord | None = None
     descriptor = -1
     acquired = False
     path: Path | None = None
     canonical_target: Path | None = None
+    marker_existed = False
     try:
-        with product_lifecycle_lock(pool):
+        with product_lifecycle_lock(root):
+            try:
+                canonical_target = canonical_target_for_bootstrap_lock(target)
+                target_key = bootstrap_lock_key(canonical_target)
+                pool, pool_existed, parent_record, pool_record = ensure_bootstrap_lock_pool_state(canonical_target)
+                path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
+                marker_existed = path_present(path)
+                if marker_existed:
+                    descriptor = open_persistent_lock_file(path, "bootstrap lifecycle lock file", create=False)
+                    acquire_file_lock(descriptor, path)
+                    acquired = True
+                    validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
+                else:
+                    descriptor = publish_new_bootstrap_lock_binding(path, canonical_target, target_key)
+                    acquired = True
+                    validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
+            except BaseException:
+                if path is not None and not marker_existed:
+                    cleanup_path_with_retries(path, raise_on_failure=True)
+                if pool is not None and parent_record is not None and pool_record is not None:
+                    restore_bootstrap_lock_pool_state(
+                        pool,
+                        existed_before=pool_existed,
+                        parent_record=parent_record,
+                        pool_record=pool_record,
+                        label="bootstrap lifecycle rollback",
+                    )
+                raise
+        yield canonical_target
+    except BaseException:
+        if path is not None and not marker_existed and pool is not None and parent_record is not None and pool_record is not None:
+            with product_lifecycle_lock(root):
+                cleanup_path_with_retries(path, raise_on_failure=True)
+                restore_bootstrap_lock_pool_state(
+                    pool,
+                    existed_before=pool_existed,
+                    parent_record=parent_record,
+                    pool_record=pool_record,
+                    label="bootstrap lifecycle rollback",
+                )
+        raise
+    finally:
+        if acquired:
+            release_file_lock(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+@contextlib.contextmanager
+def bootstrap_inspection_coordination(target: Path) -> Iterator[Path]:
+    if not target.is_absolute():
+        fail("--target must be an absolute path")
+    root = fixed_system_temp_root()
+    descriptor = -1
+    acquired = False
+    try:
+        with product_lifecycle_lock(root):
             canonical_target = canonical_target_for_bootstrap_lock(target)
             target_key = bootstrap_lock_key(canonical_target)
+            pool = bootstrap_lock_pool(canonical_target)
+            if not path_present(pool):
+                yield canonical_target
+                return
+            require_private_directory(pool, "bootstrap lifecycle lock pool")
             path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
-            descriptor = open_persistent_lock_file(path, "bootstrap lifecycle lock file", create=True)
+            try:
+                descriptor = open_persistent_lock_file(path, "bootstrap lifecycle lock file", create=False)
+            except FileNotFoundError:
+                yield canonical_target
+                return
             acquire_file_lock(descriptor, path)
             acquired = True
             validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
@@ -1535,23 +1729,69 @@ def ensure_lock_directory(target: Path) -> Path:
 
 @contextlib.contextmanager
 def target_lock(target: Path) -> Iterator[None]:
+    target_record = directory_metadata_record(target, "target lock parent")
+    lock_directory = lock_directory_path(target)
+    lock_directory_existed = path_present(lock_directory)
+    lock_directory_record = (
+        directory_metadata_record(lock_directory, "target lock directory pre-state") if lock_directory_existed else None
+    )
+    lock_file_record = file_object_record(
+        lock_path(target),
+        "target lock file pre-state",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
     lock_directory = ensure_lock_directory(target)
     path = lock_path(target)
     descriptor = open_persistent_lock_file(path, "target lock file", create=True)
     acquired = False
     protected = False
+    failed = False
+
+    def restore_lock_graph_after_failure() -> None:
+        if not path_present(target):
+            return
+        with contextlib.suppress(FileNotFoundError, OSError):
+            current = lock_directory.lstat()
+            if stat.S_ISDIR(current.st_mode) and not stat.S_ISLNK(current.st_mode):
+                lock_directory.chmod(OWNER_DIRECTORY_MODE)
+        if not lock_file_record.get("present"):
+            if path_present(path):
+                require_regular_file(path, "target lock rollback created file", owner_only=True, max_bytes=METADATA_MAX_BYTES)
+                unlink_file_durable(path)
+        elif not file_object_matches(
+            path,
+            lock_file_record,
+            "target lock rollback pre-existing file",
+            owner_only=True,
+            max_bytes=METADATA_MAX_BYTES,
+        ):
+            fail_concurrent("target lock rollback did not preserve pre-existing lock file")
+        if not lock_directory_existed:
+            if path_present(lock_directory):
+                cleanup_path_with_retries(lock_directory, raise_on_failure=True)
+        elif lock_directory_record is not None:
+            restore_directory_metadata_record(lock_directory, lock_directory_record, "target lock rollback directory")
+        restore_directory_metadata_record(target, target_record, "target lock rollback parent")
+
     try:
         acquire_file_lock(descriptor, path)
         acquired = True
         lock_directory.chmod(PROTECTED_DIRECTORY_MODE)
         protected = True
-        yield
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
     finally:
         if protected:
             with contextlib.suppress(FileNotFoundError, OSError):
                 current = lock_directory.lstat()
                 if stat.S_ISDIR(current.st_mode) and not stat.S_ISLNK(current.st_mode):
                     lock_directory.chmod(OWNER_DIRECTORY_MODE)
+        if failed:
+            restore_lock_graph_after_failure()
         if acquired:
             release_file_lock(descriptor)
         os.close(descriptor)
@@ -1589,7 +1829,7 @@ def locked_existing_target(target: Path) -> Iterator[Path]:
 
 @contextlib.contextmanager
 def locked_inspection_target(target: Path) -> Iterator[Path]:
-    with bootstrap_lifecycle_lock(target) as canonical_target:
+    with bootstrap_inspection_coordination(target) as canonical_target:
         if path_present(canonical_target):
             require_private_directory(canonical_target, "target")
             yield canonical_target
@@ -3496,6 +3736,10 @@ def remove_cli(target: Path) -> dict[str, Any]:
         before_software_payload = software_payload_snapshot(before_software)
         desired = {relative: (None, None) for relative in software_file_modes()}
         software_undo: FileUndoTransaction | None = None
+        directory_undo: DirectoryUndoTransaction | None = None
+        software_cleanup_done = False
+        directory_cleanup_done = False
+        committed = False
         try:
             software_undo = apply_software_state(
                 canonical_target,
@@ -3508,19 +3752,28 @@ def remove_cli(target: Path) -> dict[str, Any]:
             final = software_status(canonical_target)
             if final["present"]:
                 fail("MiMo Code software remove left target-owned files")
-            for directory in (
-                software_tree_binary(canonical_target).parent,
-                software_tree_binary(canonical_target).parent.parent,
-                software_manifest_path(canonical_target).parent,
-                mimo_executable(canonical_target).parent,
+            directory_undo = DirectoryUndoTransaction(canonical_target, label="software remove")
+            for relative in (
+                software_tree_binary(canonical_target).parent.relative_to(canonical_target),
+                software_tree_binary(canonical_target).parent.parent.relative_to(canonical_target),
+                software_manifest_path(canonical_target).parent.relative_to(canonical_target),
+                mimo_executable(canonical_target).parent.relative_to(canonical_target),
             ):
-                with contextlib.suppress(FileNotFoundError):
-                    rmdir_if_empty_durable(directory)
+                directory_undo.hold_empty(relative)
+            final_after_dirs = software_status(canonical_target)
+            if final_after_dirs["present"]:
+                fail("MiMo Code software remove left target-owned files after directory cleanup")
+            directory_undo.commit_cleanup()
+            directory_cleanup_done = True
             software_undo.commit_cleanup()
+            software_cleanup_done = True
+            committed = True
         except BaseException:
-            if software_undo is not None:
+            if directory_undo is not None and not directory_cleanup_done and not committed:
+                directory_undo.rollback()
+            if software_undo is not None and not software_cleanup_done and not committed:
                 software_undo.rollback()
-            else:
+            elif software_undo is None:
                 restore_software_snapshot(canonical_target, before_software)
             raise
     return {"ok": True, "operation": "remove-cli", "target": str(canonical_target), "removed": True}

@@ -19,9 +19,11 @@ separate from the supported subset.
 For every target-bound command the supported-host preflight runs before target
 filesystem inspection; only lexical absolute-target validation precedes the
 external lifecycle coordination. The manager resolves target aliases under a
-product-wide external lock, then acquires the canonical-target external lock
-before status, planning, mutation, software inspection, or launch handoff.
-Read-only commands do not create target-internal lock state.
+product-wide external lock. Mutating commands publish and acquire a
+canonical-target external marker atomically; read-only `status`, `plan`, and
+`software-status` use an existing marker when one is present and otherwise
+stay on the product-held no-create path. Read-only commands create neither
+target-specific external markers nor target-internal lock state.
 
 Managed launch and staged probes set manager-owned MiMo Code flags that disable
 project config discovery, Claude compatibility loaders, external skill scans,

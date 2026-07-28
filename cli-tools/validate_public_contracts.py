@@ -227,6 +227,19 @@ def bootstrap_product_root(system_root: Path) -> Path:
     return system_root / f".{nddev_mimocode.PRODUCT_NAME}-{current_uid()}-lifecycle-locks"
 
 
+def is_product_lifecycle_lock_path(path: Path) -> bool:
+    try:
+        return path.resolve() == nddev_mimocode.fixed_system_temp_root().resolve()
+    except OSError:
+        return False
+
+
+def is_bootstrap_lifecycle_lock_path(path: Path) -> bool:
+    return path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX) or (
+        nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX in path.name and ".nddev.tmp." in path.name
+    )
+
+
 def path_identity(path: Path) -> tuple[int, int, int, int, int, int] | None:
     try:
         info = path.lstat()
@@ -420,14 +433,16 @@ def validate_versions(errors: list[str]) -> None:
         require(transaction.get("durable_write_order") == ["stage", "fchmod", "file-fsync", "replace", "parent-fsync"], "durable write order contract mismatch", errors)
         require(transaction.get("exact_postconditions") is True, "exact postcondition contract missing", errors)
         require("lexical absolute-target validation" in transaction.get("pre_lock_target_observation", ""), "pre-lock target observation contract missing", errors)
-        require("canonical-target external bootstrap" in transaction.get("lock", ""), "canonical external lock contract missing", errors)
+        require("read-only inspection uses existing canonical bootstrap" in transaction.get("lock", ""), "read-only external lock contract missing", errors)
+        require("mutating commands atomically publish" in transaction.get("lock", ""), "mutating external lock contract missing", errors)
+        require("absent targets do not create target-specific" in str(transaction.get("external_lock_persistent", "")), "command-accurate external lock persistence contract missing", errors)
         require("read-only inspection commands do not create" in str(transaction.get("internal_lock_persistent", "")), "read-only internal lock contract missing", errors)
         require(
             transaction.get("lock_order")
             == [
                 "product-wide-external-coordination",
                 "target-filesystem-resolution",
-                "canonical-target-external-lock",
+                "canonical-target-external-lock-if-present-or-mutating",
                 "target-internal-mutating-only",
             ],
             "transaction lock order contract mismatch",
@@ -479,7 +494,7 @@ def validate_versions(errors: list[str]) -> None:
                 "lexical-absolute-target",
                 "product-wide-external-coordination",
                 "target-filesystem-resolution",
-                "canonical-target-external-lock",
+                "canonical-target-external-lock-if-present-or-mutating",
             ],
             "target preflight order contract mismatch",
             errors,
@@ -694,9 +709,9 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         return original_target(raw_target)
 
     def traced_acquire(descriptor: int, path: Path) -> None:
-        if path.name == f".{nddev_mimocode.PRODUCT_NAME}-{current_uid()}-lifecycle-locks":
+        if is_product_lifecycle_lock_path(path):
             trace.append("product-lock-acquire")
-        elif path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
+        elif is_bootstrap_lifecycle_lock_path(path):
             trace.append("external-lock-acquire")
         else:
             trace.append("target-lock-acquire")
@@ -760,10 +775,11 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
                         f"{command} did not coordinate before canonicalization: {trace}",
                         errors,
                     )
+                    external_index = trace.index("external-lock-acquire") if "external-lock-acquire" in trace else trace.index("product-lock-acquire")
                     require(
                         "target-path-present" in trace
-                        and trace.index("target-path-present") > trace.index("external-lock-acquire"),
-                        f"{command} observed target before canonical external lock: {trace}",
+                        and trace.index("target-path-present") > external_index,
+                        f"{command} observed target before external lifecycle coordination: {trace}",
                         errors,
                     )
                     require(
@@ -780,12 +796,7 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         nddev_mimocode.inspect_target = original_inspect
         nddev_mimocode.path_present = original_path_present
         nddev_mimocode.selected_asset = original_selected_asset
-    require(
-        trace[:5]
-        == ["host", "lexical-target", "product-lock-acquire", "target-fs-canonicalization", "external-lock-acquire"],
-        f"preflight order mismatch: {trace}",
-        errors,
-    )
+    require(trace[:4] == ["host", "lexical-target", "product-lock-acquire", "target-fs-canonicalization"], f"preflight order mismatch: {trace}", errors)
     require("status-read" in trace and trace.index("status-read") > trace.index("target-fs-canonicalization"), "status read occurred before external lock canonicalization", errors)
 
 
@@ -851,9 +862,9 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
             original_acquire = nddev_mimocode.acquire_file_lock
 
             def traced_acquire(descriptor: int, path: Path) -> None:
-                if path.name == f".{nddev_mimocode.PRODUCT_NAME}-{current_uid()}-lifecycle-locks":
+                if is_product_lifecycle_lock_path(path):
                     lock_events.append(("product", str(path)))
-                elif path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
+                elif is_bootstrap_lifecycle_lock_path(path):
                     lock_events.append(("external", str(path)))
                 else:
                     lock_events.append(("internal", str(path)))
@@ -861,9 +872,8 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
 
             nddev_mimocode.acquire_file_lock = traced_acquire
             try:
-                observed_external: dict[str, dict[str, str]] = {}
+                before_pool = real_bootstrap_snapshot(bootstrap_product_root(injected))
                 for command in ("status", "plan", "software-status"):
-                    observed_external[command] = {}
                     for label, target in (("real", missing_real), ("alias", missing_alias)):
                         before = len(lock_events)
                         rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
@@ -883,15 +893,9 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                         events = lock_events[before:]
                         kinds = [kind for kind, _path in events]
                         require(kinds.count("product") == 1, f"{command} {label} product coordination mismatch: {events}", errors)
-                        require(kinds.count("external") == 1, f"{command} {label} canonical external lock mismatch: {events}", errors)
+                        require(kinds.count("external") == 0, f"{command} {label} created target-specific external lock for absent read: {events}", errors)
                         require("internal" not in kinds, f"{command} {label} created an internal target lock for an absent read", errors)
-                        require(kinds.index("product") < kinds.index("external"), f"{command} {label} lock order mismatch: {events}", errors)
-                        observed_external[command][label] = [path for kind, path in events if kind == "external"][0]
-                    require(
-                        observed_external[command]["real"] == observed_external[command]["alias"],
-                        f"{command} real and alias missing targets used different canonical external locks",
-                        errors,
-                    )
+                    require(real_bootstrap_snapshot(bootstrap_product_root(injected)) == before_pool, f"{command} absent read mutated bootstrap lock pool", errors)
             finally:
                 nddev_mimocode.acquire_file_lock = original_acquire
 
@@ -929,6 +933,31 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                 else:
                     require("target is locked" in payload.get("error", ""), "held alias canonical lock error mismatch", errors)
 
+            nddev_mimocode.acquire_file_lock = traced_acquire
+            try:
+                observed_external: dict[str, dict[str, str]] = {}
+                for command in ("status", "plan", "software-status"):
+                    observed_external[command] = {}
+                    for label, target in (("real", missing_real), ("alias", missing_alias)):
+                        before = len(lock_events)
+                        rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
+                        require(rc == 0, f"{command} {label} existing marker read failed", errors)
+                        require(stderr == "", f"{command} {label} existing marker read wrote stderr", errors)
+                        events = lock_events[before:]
+                        kinds = [kind for kind, _path in events]
+                        require(kinds.count("product") == 1, f"{command} {label} existing marker product lock mismatch: {events}", errors)
+                        require(kinds.count("external") == 1, f"{command} {label} existing marker external lock mismatch: {events}", errors)
+                        require("internal" not in kinds, f"{command} {label} existing marker created internal lock", errors)
+                        require(kinds.index("product") < kinds.index("external"), f"{command} {label} existing marker lock order mismatch: {events}", errors)
+                        observed_external[command][label] = [path for kind, path in events if kind == "external"][0]
+                    require(
+                        observed_external[command]["real"] == observed_external[command]["alias"],
+                        f"{command} real and alias existing marker targets used different canonical external locks",
+                        errors,
+                    )
+            finally:
+                nddev_mimocode.acquire_file_lock = original_acquire
+
             for fixture in ("absent-lock-graph", "preexisting-lock-graph"):
                 target = root / fixture
                 target.mkdir(mode=0o700)
@@ -956,6 +985,92 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                         f"{command} read-only no-op changed target graph for {fixture}",
                         errors,
                     )
+
+
+def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
+    source = MANAGER_PATH.read_text(encoding="utf-8")
+    require("ftruncate" not in source, "bootstrap lock binding must not truncate in place", errors)
+    for fault in ("fchmod", "write", "file-fsync", "replace", "parent-fsync"):
+        with isolated_bootstrap_root(errors) as injected:
+            with tempfile.TemporaryDirectory(prefix=f"nddev-mimocode-bootstrap-{fault}.") as raw:
+                root = Path(raw)
+                root.chmod(0o700)
+                target_parent = root / "targets"
+                target_parent.mkdir(mode=0o700)
+                target_parent.chmod(0o700)
+                target = target_parent / "target"
+                pool = bootstrap_product_root(injected)
+                before = real_bootstrap_snapshot(pool)
+                original_fchmod = nddev_mimocode.os.fchmod
+                original_write_all = nddev_mimocode.write_all
+                original_fsync = nddev_mimocode.os.fsync
+                original_replace = nddev_mimocode.os.replace
+                original_fsync_directory = nddev_mimocode.fsync_directory
+                injected_fault = {"value": False}
+                marker_file_fsync_armed = {"value": False}
+
+                def fail_fchmod(descriptor: int, mode: int) -> None:
+                    if not injected_fault["value"] and mode == nddev_mimocode.OWNER_FILE_MODE:
+                        injected_fault["value"] = True
+                        raise OSError("forced bootstrap fchmod fault")
+                    return original_fchmod(descriptor, mode)
+
+                def fail_write(descriptor: int, content: bytes) -> None:
+                    if not injected_fault["value"]:
+                        injected_fault["value"] = True
+                        os.write(descriptor, content[: max(1, len(content) // 3)])
+                        raise OSError("forced bootstrap write fault")
+                    return original_write_all(descriptor, content)
+
+                def arm_marker_file_fsync(descriptor: int, content: bytes) -> None:
+                    original_write_all(descriptor, content)
+                    marker_file_fsync_armed["value"] = True
+
+                def fail_fsync(descriptor: int) -> None:
+                    if marker_file_fsync_armed["value"] and not injected_fault["value"]:
+                        injected_fault["value"] = True
+                        raise OSError("forced bootstrap file fsync fault")
+                    return original_fsync(descriptor)
+
+                def fail_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+                    if not injected_fault["value"] and Path(destination).name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
+                        injected_fault["value"] = True
+                        raise OSError("forced bootstrap replace fault")
+                    return original_replace(source, destination, *args, **kwargs)
+
+                def fail_parent_fsync(path: Path, label: str) -> None:
+                    if label == "bootstrap lifecycle lock pool after binding publish":
+                        injected_fault["value"] = True
+                        raise OSError("forced bootstrap parent fsync fault")
+                    return original_fsync_directory(path, label)
+
+                try:
+                    if fault == "fchmod":
+                        nddev_mimocode.os.fchmod = fail_fchmod
+                    elif fault == "write":
+                        nddev_mimocode.write_all = fail_write
+                    elif fault == "file-fsync":
+                        nddev_mimocode.write_all = arm_marker_file_fsync
+                        nddev_mimocode.os.fsync = fail_fsync
+                    elif fault == "replace":
+                        nddev_mimocode.os.replace = fail_replace
+                    else:
+                        nddev_mimocode.fsync_directory = fail_parent_fsync
+                    require_exception(
+                        lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "full-auto", "install"),
+                        (OSError, nddev_mimocode.MiMoCodeSetupError),
+                        f"bootstrap {fault} fault must propagate",
+                        errors,
+                    )
+                finally:
+                    nddev_mimocode.os.fchmod = original_fchmod
+                    nddev_mimocode.write_all = original_write_all
+                    nddev_mimocode.os.fsync = original_fsync
+                    nddev_mimocode.os.replace = original_replace
+                    nddev_mimocode.fsync_directory = original_fsync_directory
+                require(injected_fault["value"], f"bootstrap {fault} fault was not exercised", errors)
+                require(real_bootstrap_snapshot(pool) == before, f"bootstrap {fault} fault mutated lock pool", errors)
+                require(not target.exists(), f"bootstrap {fault} fault created target", errors)
 
 
 def validate_launch_environment(errors: list[str]) -> None:
@@ -1719,6 +1834,34 @@ def validate_transaction_faults(errors: list[str]) -> None:
             require(software_identity_snapshot(target) == before, "remove-cli hold failure did not rollback exact software objects", errors)
             require_no_transaction_residue(target, "remove-cli hold failure left residue", errors)
 
+            target = (root / "remove-cli-directory").resolve()
+            make_fake_software(target)
+            before_tree = exact_tree_identity(target)
+            original_hold_empty = nddev_mimocode.DirectoryUndoTransaction.hold_empty
+            directory_removed = {"value": False}
+
+            def fail_after_first_directory_hold(self: Any, relative: Path) -> bool:
+                held = original_hold_empty(self, relative)
+                if held and not directory_removed["value"]:
+                    directory_removed["value"] = True
+                    require(not nddev_mimocode.path_present(target / relative), "directory hold did not remove visible software directory", errors)
+                    raise OSError("forced remove-cli directory post-delete fault")
+                return held
+
+            nddev_mimocode.DirectoryUndoTransaction.hold_empty = fail_after_first_directory_hold
+            try:
+                require_exception(
+                    lambda: nddev_mimocode.remove_cli(target),
+                    OSError,
+                    "forced remove-cli directory post-delete fault must propagate",
+                    errors,
+                )
+            finally:
+                nddev_mimocode.DirectoryUndoTransaction.hold_empty = original_hold_empty
+            require(directory_removed["value"], "remove-cli directory post-delete fault was not exercised", errors)
+            require(exact_tree_identity(target) == before_tree, "remove-cli directory post-delete fault changed directory identity", errors)
+            require_no_transaction_residue(target, "remove-cli directory post-delete fault left residue", errors)
+
             target = (root / "software-rollback").resolve()
             old_binary = b"old-binary\n"
             new_binary = b"new-binary\n"
@@ -2154,6 +2297,7 @@ def main() -> int:
     validate_cli_json_and_preflight_boundary(errors)
     validate_setup_profiles(errors)
     validate_read_only_alias_and_lock_noop(errors)
+    validate_bootstrap_lock_publication_faults(errors)
     validate_launch_environment(errors)
     validate_project_boundary(errors)
     validate_replace_managed_state_cleanup(errors)
