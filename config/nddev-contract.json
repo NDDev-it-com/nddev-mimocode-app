@@ -158,7 +158,7 @@
       "mutating_target_commands": true,
       "read_only_status_plan_software_status": "cold no-anchor reads create no anchors; seeded reads use existing global.lock and existing target marker when present; absent targets do not create target-specific external markers"
     },
-    "read_only_cold_exception": "cold no-anchor read is the only target-observation exception before external coordination; it double-checks product anchor absence and retries under the anchor if a concurrent mutation publishes one",
+    "read_only_cold_exception": "cold zero-anchor read is the only target-observation exception before external coordination; it inspects the existing bootstrap product directory without creating or repairing, fails closed on product-absent canonical target anchors or publication aliases, and retries/fails closed if product or target anchor state changes during the read",
     "published_anchor_rollback_exception": "complete validated product and canonical target anchors are monotonic rendezvous objects after the final-path publication commit point and are never unlinked by ordinary lifecycle cleanup or rollback",
     "hardlink_publication_alias_recovery": "mutating openers lock the final anchor before parent mutation, remove exactly one bounded same-dev-inode machine-named publication alias, fsync the parent, and revalidate final path binding with nlink=1; read-only shared openers fail closed without recovery when nlink is not 1 or a publication alias is present; unknown or multiple hardlinks fail closed",
     "internal_lock_persistent": "mutating commands only; read-only inspection commands do not create target-internal lock graph",

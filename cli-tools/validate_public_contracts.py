@@ -720,8 +720,14 @@ def validate_versions(errors: list[str]) -> None:
             errors,
         )
         require(
-            "cold no-anchor read" in transaction.get("read_only_cold_exception", ""),
+            "cold zero-anchor read" in transaction.get("read_only_cold_exception", ""),
             "cold read exception contract missing",
+            errors,
+        )
+        require(
+            "product-absent canonical target anchors"
+            in transaction.get("read_only_cold_exception", ""),
+            "product-absent target anchor fail-closed contract missing",
             errors,
         )
         require(
@@ -1632,6 +1638,17 @@ def validate_setup_profiles(errors: list[str]) -> None:
 
 
 def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
+    source = MANAGER_PATH.read_text(encoding="utf-8")
+    require(
+        "require_no_cold_bootstrap_target_anchor" in source,
+        "cold read-only inspection must guard product-absent target anchors",
+        errors,
+    )
+    require(
+        "observe_bootstrap_target_anchor_no_create" in source,
+        "cold read-only inspection must use no-create target anchor observation",
+        errors,
+    )
     with isolated_bootstrap_root(errors) as injected:
         with tempfile.TemporaryDirectory(prefix="nddev-mimocode-readonly-locks.") as raw:
             root = Path(raw)
@@ -1737,6 +1754,72 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                     )
             finally:
                 nddev_mimocode.acquire_file_lock = original_acquire
+
+            target_key = nddev_mimocode.bootstrap_lock_key(canonical_missing)
+            pool = nddev_mimocode.ensure_bootstrap_lock_pool(canonical_missing)
+            orphan_path = pool / f"{target_key}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}"
+            descriptor = nddev_mimocode.publish_new_bootstrap_lock_binding(
+                orphan_path, canonical_missing, target_key
+            )
+            try:
+                nddev_mimocode.release_file_lock(descriptor)
+            finally:
+                os.close(descriptor)
+            before_orphan_pool = real_bootstrap_snapshot(pool)
+            for command in ("status", "plan", "software-status"):
+                rc, stdout, stderr = run_main_captured(command_argv(command, target=str(missing_alias)))
+                require(rc == 2, f"{command} accepted product-absent target anchor", errors)
+                require(stderr == "", f"{command} orphan anchor wrote stderr", errors)
+                payload = json.loads(stdout)
+                require(
+                    "product anchor is missing" in payload.get("error", ""),
+                    f"{command} orphan anchor error mismatch",
+                    errors,
+                )
+                require(
+                    real_bootstrap_snapshot(pool) == before_orphan_pool,
+                    f"{command} mutated product-absent target anchor state",
+                    errors,
+                )
+            orphan_path.unlink()
+
+            orphan_path.write_bytes(b"{}\n")
+            orphan_path.chmod(0o600)
+            malformed_before = real_bootstrap_snapshot(pool)
+            rc, stdout, stderr = run_main_captured(
+                command_argv("status", target=str(missing_alias))
+            )
+            require(rc == 2, "status accepted malformed product-absent target anchor", errors)
+            require(stderr == "", "status malformed orphan wrote stderr", errors)
+            require(
+                real_bootstrap_snapshot(pool) == malformed_before,
+                "status mutated malformed product-absent target anchor",
+                errors,
+            )
+            orphan_path.unlink()
+
+            descriptor = nddev_mimocode.publish_new_bootstrap_lock_binding(
+                orphan_path, canonical_missing, target_key
+            )
+            try:
+                nddev_mimocode.release_file_lock(descriptor)
+            finally:
+                os.close(descriptor)
+            alias_path = orphan_path.with_name(f".{orphan_path.name}.nddev.tmp.12345.67890")
+            os.link(orphan_path, alias_path)
+            alias_before = real_bootstrap_snapshot(pool)
+            rc, stdout, stderr = run_main_captured(
+                command_argv("software-status", target=str(missing_alias))
+            )
+            require(rc == 2, "software-status accepted product-absent target anchor alias", errors)
+            require(stderr == "", "software-status orphan alias wrote stderr", errors)
+            require(
+                real_bootstrap_snapshot(pool) == alias_before,
+                "software-status mutated product-absent target anchor alias",
+                errors,
+            )
+            alias_path.unlink()
+            orphan_path.unlink()
 
             with nddev_mimocode.bootstrap_lifecycle_lock(missing_alias) as canonical_target:
                 require(

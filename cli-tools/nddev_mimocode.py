@@ -70,6 +70,7 @@ METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024
 DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
 SOFTWARE_EXECUTABLE_MAX_BYTES = 128 * 1024 * 1024
+BOOTSTRAP_POOL_SCAN_ENTRY_LIMIT = 1024
 PROCESS_TIMEOUT_SECONDS = 120
 STAGED_VERSION_PROBE_TIMEOUT_SECONDS = 60.0
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -2570,6 +2571,125 @@ def validate_bootstrap_lock_binding(
         fail("bootstrap lifecycle lock file is bound to a different canonical target")
 
 
+def read_bootstrap_anchor_bytes_no_create(
+    path: Path, label: str
+) -> tuple[bytes, os.stat_result]:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        raise
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        fail(f"{label} must be a regular non-symlink file")
+    if not is_owner_only_file(before):
+        fail(f"{label} must be owned by the current user with mode 0600")
+    if before.st_nlink not in {1, 2}:
+        fail(f"{label} must not have unknown hard-link aliases")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            fail(f"{label} must not be a symlink")
+        fail(f"cannot open {label} {path}: {exc}")
+    try:
+        opened = os.fstat(descriptor)
+        if identity_of(opened) != identity_of(before):
+            fail_concurrent(f"{label} changed while it was being opened")
+        size = os.lseek(descriptor, 0, os.SEEK_END)
+        if size > METADATA_MAX_BYTES:
+            fail(f"{label} exceeds the metadata size limit")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        content = os.read(descriptor, size)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    final = require_bootstrap_anchor_path(path, label, allow_publication_alias=True)
+    if identity_of(final) != identity_of(before) or identity_of(after) != identity_of(before):
+        fail_concurrent(f"{label} changed while it was being read")
+    return content, final
+
+
+def observe_bootstrap_target_anchor_no_create(
+    canonical_target: Path, target_key: str
+) -> tuple[Any, ...]:
+    pool = bootstrap_lock_pool(canonical_target)
+    try:
+        pool_info = pool.lstat()
+    except FileNotFoundError:
+        return ("absent-pool",)
+    if stat.S_ISLNK(pool_info.st_mode) or not stat.S_ISDIR(pool_info.st_mode):
+        fail("bootstrap lifecycle lock pool must be a real directory")
+    if not is_owner_private_directory(pool_info):
+        fail("bootstrap lifecycle lock pool must be owned by the current user with mode 0700")
+
+    path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
+    alias_records: list[tuple[str, tuple[int, int], bool]] = []
+    try:
+        children = sorted(pool.iterdir(), key=lambda item: item.name)
+    except FileNotFoundError:
+        return ("absent-pool",)
+    if len(children) > BOOTSTRAP_POOL_SCAN_ENTRY_LIMIT:
+        fail("bootstrap lifecycle lock pool exceeds the bounded scan limit")
+    for child in children:
+        if child == path:
+            continue
+        prefix = f".{path.name}.nddev.tmp."
+        if not child.name.startswith(prefix):
+            continue
+        try:
+            child_info = child.lstat()
+        except FileNotFoundError:
+            continue
+        bounded = is_bootstrap_publication_alias(child, path)
+        alias_records.append((child.name, identity_of(child_info), bounded))
+        if not bounded:
+            fail("bootstrap lifecycle lock file has an unsafe publication alias")
+
+    try:
+        content, info = read_bootstrap_anchor_bytes_no_create(
+            path, "bootstrap lifecycle lock file"
+        )
+    except FileNotFoundError:
+        if alias_records:
+            fail("bootstrap lifecycle lock publication alias is missing its final anchor")
+        return ("absent-anchor", identity_of(pool_info), pool_info.st_mtime_ns)
+
+    binding = parse_json_object(content, "bootstrap lifecycle lock file")
+    require_exact_keys(binding, BOOTSTRAP_LOCK_KEYS, "bootstrap lifecycle lock file")
+    if binding != bootstrap_lock_binding(canonical_target, target_key):
+        fail("bootstrap lifecycle lock file is bound to a different canonical target")
+    if info.st_nlink != 1:
+        matching = [record for record in alias_records if record[1] == identity_of(info)]
+        unknown = [record for record in alias_records if record[1] != identity_of(info)]
+        if unknown or len(matching) != 1:
+            fail("bootstrap lifecycle lock file must have exactly one bounded publication alias")
+    elif alias_records:
+        fail("bootstrap lifecycle lock file has a stale publication alias")
+    return (
+        "present-anchor",
+        identity_of(pool_info),
+        pool_info.st_mtime_ns,
+        identity_of(info),
+        info.st_nlink,
+        info.st_mtime_ns,
+        sha256_bytes(content),
+        tuple(alias_records),
+    )
+
+
+def require_no_cold_bootstrap_target_anchor(canonical_target: Path, target_key: str) -> tuple[Any, ...]:
+    observation = observe_bootstrap_target_anchor_no_create(canonical_target, target_key)
+    if observation[0] == "present-anchor":
+        fail("bootstrap product anchor is missing while the canonical target anchor exists")
+    return observation
+
+
 def publish_new_bootstrap_lock_binding(path: Path, canonical_target: Path, target_key: str) -> int:
     desired = canonical_json(bootstrap_lock_binding(canonical_target, target_key))
     return publish_bootstrap_anchor_no_replace(
@@ -2660,8 +2780,13 @@ def bootstrap_inspection_coordination(target: Path) -> Iterator[Path]:
         global_path = bootstrap_global_lock_path()
         if not path_present(global_path):
             canonical_target = canonical_target_for_bootstrap_lock(target)
+            target_key = bootstrap_lock_key(canonical_target)
+            before_anchor = require_no_cold_bootstrap_target_anchor(canonical_target, target_key)
             yield canonical_target
             if path_present(global_path):
+                raise RetryBootstrapInspection
+            after_anchor = require_no_cold_bootstrap_target_anchor(canonical_target, target_key)
+            if after_anchor != before_anchor:
                 raise RetryBootstrapInspection
             return
         with product_lifecycle_lock(global_path, shared=True):
