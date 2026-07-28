@@ -136,7 +136,14 @@
       "launch"
     ],
     "plan_mutates": false,
-    "restore_backup_option": "--backup <0..9>"
+    "restore_backup_option": "--backup <0..9>",
+    "target_preflight_order": [
+      "supported-host",
+      "lexical-absolute-target",
+      "external-lifecycle-lock",
+      "target-filesystem-resolution"
+    ],
+    "json_argparse_errors": "invalid commands, missing required arguments, and type errors return rc 2 with JSON stdout and empty stderr when --json is present"
   },
   "transaction_policy": {
     "managed_file_mode": "0600",
@@ -150,6 +157,7 @@
       "external",
       "internal"
     ],
+    "pre_lock_target_observation": "none; only lexical absolute-target validation may precede the stable external lifecycle lock",
     "release_order": [
       "internal",
       "external"
@@ -171,6 +179,8 @@
     ],
     "exact_postconditions": true,
     "rollback_on_failure": true,
+    "rollback_exact_object_graph": "path presence, kind, directory/file topology, bytes, sizes, modes, inode identity, and modification times for in-scope target, control, lock, backup, and software paths",
+    "rollback_strategy": "rename-held undo material preserved until lifecycle postconditions and cleanup succeed",
     "setup_update_command": "update",
     "setup_update_scope": "existing managed setup/profile content only; software update uses update-cli",
     "setup_update_noop": "true no-op when current managed bytes already match the current build for the recorded setup_id/profile_id",
@@ -181,7 +191,10 @@
     "target_bound_backups": true,
     "backup_slots": 10,
     "backup_file_records": "path-size-sha256",
-    "same_uid_no_sandbox_boundary": "Deliberate same-UID tampering outside the managed no-sandbox process boundary is not claimed to be prevented."
+    "backup_physical_topology": "exact recorded files plus exact ancestor directories only; unrecorded files, unsupported path kinds, and empty extra directories are rejected",
+    "backup_cleanup_postcondition": "staged, retired, and recovery backup pools are explicit success postconditions and cleanup failures do not return success",
+    "same_uid_no_sandbox_boundary": "Deliberate same-UID tampering outside the managed no-sandbox process boundary is not claimed to be prevented.",
+    "same_uid_recomputed_payload_digest_tamper_machine_capability": false
   },
   "software_install": {
     "tested_version": "0.1.9",

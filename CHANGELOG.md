@@ -8,6 +8,8 @@
   launch operations.
 - Add explicit setup `update` lifecycle distinct from target-owned software
   `update-cli`.
+- Enforce supported-host preflight before target filesystem observation and
+  restore lifecycle failures through rename-held object rollback.
 - Bind software installation to verified official MiMo Code release assets and
   the verified official installer in local-binary mode.
 - Add canonical `AGENTS.md` plus the Claude instruction bridge.

@@ -15,6 +15,9 @@ architectures fail before network, staging, or runtime. No official Ubuntu
 version floor is published or claimed. The baseline preserves
 all official v0.1.9 upstream artifact names and digests, including musl and
 Windows artifacts, as vendor observation separate from the supported subset.
+For every target-bound command the supported-host preflight runs before target
+filesystem inspection; only lexical absolute-target validation precedes the
+stable external lifecycle lock.
 
 Managed launch and staged probes set manager-owned MiMo Code flags that disable
 project config discovery, Claude compatibility loaders, external skill scans,
@@ -44,6 +47,10 @@ managed target to the current module build for the target's recorded setup and
 profile, creates a backup only when managed files change, verifies exact
 postconditions, and is a true no-op when the target is already current.
 Target-owned MiMo Code software updates use `update-cli` instead.
+
+When `--json` is present, invalid commands, missing required arguments, and
+argument type errors return exit code 2 with a JSON error on stdout and an
+empty stderr stream.
 
 Target-owned software lifecycle:
 

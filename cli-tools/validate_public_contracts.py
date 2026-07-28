@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import tempfile
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -347,6 +348,7 @@ def validate_versions(errors: list[str]) -> None:
         require(runtime.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS, "manifest rejected host ids mismatch", errors)
         require(runtime.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION, "manifest product host asset selection mismatch", errors)
         require(runtime.get("platform_selection_source") == "cli-tools/nddev_mimocode.py:detect_platform_selection", "manifest platform source mismatch", errors)
+        require(runtime.get("target_preflight_order_source") == "cli-tools/nddev_mimocode.py:run", "manifest preflight source mismatch", errors)
     release = baseline.get("release")
     install = baseline.get("install")
     product_hosts = baseline.get("supported_product_hosts")
@@ -401,9 +403,15 @@ def validate_versions(errors: list[str]) -> None:
         require(transaction.get("legacy_migrate_preserves_unmanaged_config_keys") is True, "legacy migrate preservation contract missing", errors)
         require(transaction.get("durable_write_order") == ["stage", "fchmod", "file-fsync", "replace", "parent-fsync"], "durable write order contract mismatch", errors)
         require(transaction.get("exact_postconditions") is True, "exact postcondition contract missing", errors)
+        require("lexical absolute-target validation" in transaction.get("pre_lock_target_observation", ""), "pre-lock target observation contract missing", errors)
+        require("inode identity" in transaction.get("rollback_exact_object_graph", ""), "exact object graph contract missing inode identity", errors)
+        require("rename-held undo" in transaction.get("rollback_strategy", ""), "rollback strategy contract mismatch", errors)
         require(transaction.get("restore_removes_known_managed_paths_absent_from_backup") is True, "restore deletion contract missing", errors)
         require(transaction.get("restore_unknown_backup_paths") == "fail-closed", "restore unknown-path contract mismatch", errors)
         require(transaction.get("backup_file_records") == "path-size-sha256", "backup file record contract mismatch", errors)
+        require("empty extra directories" in transaction.get("backup_physical_topology", ""), "backup topology contract missing", errors)
+        require("cleanup failures do not return success" in transaction.get("backup_cleanup_postcondition", ""), "backup cleanup contract missing", errors)
+        require(transaction.get("same_uid_recomputed_payload_digest_tamper_machine_capability") is False, "same-UID tamper capability must be false", errors)
         require(transaction.get("setup_update_command") == "update", "setup update command contract missing", errors)
         require("update-cli" in transaction.get("setup_update_scope", ""), "setup update/software update separation missing", errors)
         require("true no-op" in transaction.get("setup_update_noop", ""), "setup update no-op contract missing", errors)
@@ -428,6 +436,16 @@ def validate_versions(errors: list[str]) -> None:
     require(list(nddev_mimocode.REJECTED_PRODUCT_HOST_IDS) == REJECTED_PRODUCT_HOST_IDS, "manager rejected host ids mismatch", errors)
     for name in EXPECTED_FIXED_RUNTIME_ENV:
         require(name in nddev_mimocode.BLOCKED_MANAGER_ENV_NAMES, f"manager env override not blocked: {name}", errors)
+    command_policy = contract.get("command_policy")
+    require(isinstance(command_policy, dict), "contract command_policy missing", errors)
+    if isinstance(command_policy, dict):
+        require(
+            command_policy.get("target_preflight_order")
+            == ["supported-host", "lexical-absolute-target", "external-lifecycle-lock", "target-filesystem-resolution"],
+            "target preflight order contract mismatch",
+            errors,
+        )
+        require("JSON stdout" in command_policy.get("json_argparse_errors", ""), "JSON argparse boundary contract missing", errors)
 
 
 def validate_assets(errors: list[str]) -> None:
@@ -540,6 +558,139 @@ def validate_platform_selection(errors: list[str]) -> None:
             f"{label} host must be rejected before platform selection proceeds",
             errors,
         )
+
+
+def command_argv(command: str, target: str = "/tmp/nddev-mimocode-public-target") -> list[str]:
+    if command == "status":
+        return ["status", "--target", target, "--json"]
+    if command == "software-status":
+        return ["software-status", "--target", target, "--json"]
+    if command == "plan":
+        return ["plan", "--target", target, "--json"]
+    if command in {"install", "switch"}:
+        return [command, "--target", target, "--json"]
+    if command == "update":
+        return ["update", "--target", target, "--json"]
+    if command == "migrate":
+        return ["migrate", "--target", target, "--json"]
+    if command == "restore":
+        return ["restore", "--backup", "0", "--target", target, "--json"]
+    if command == "remove":
+        return ["remove", "--target", target, "--json"]
+    if command in {"install-cli", "update-cli", "remove-cli"}:
+        return [command, "--target", target, "--json"]
+    if command == "launch":
+        return ["launch", "--target", target, "--json", "--", "--version"]
+    raise AssertionError(f"unsupported command fixture: {command}")
+
+
+def run_main_captured(argv: list[str]) -> tuple[int, str, str]:
+    stdout = StringIO()
+    stderr = StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        rc = nddev_mimocode.main(argv)
+    return rc, stdout.getvalue(), stderr.getvalue()
+
+
+def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
+    for argv in (
+        ["status", "--json"],
+        ["restore", "--backup", "not-an-int", "--target", "/tmp/target", "--json"],
+        ["unknown-command", "--json"],
+    ):
+        rc, stdout, stderr = run_main_captured(list(argv))
+        require(rc == 2, f"argparse JSON boundary rc mismatch: {argv}", errors)
+        require(stderr == "", f"argparse JSON boundary wrote stderr: {argv}", errors)
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            errors.append(f"argparse JSON boundary wrote invalid JSON: {argv}")
+            continue
+        require(payload.get("ok") is False and isinstance(payload.get("error"), str), f"argparse JSON error payload mismatch: {argv}", errors)
+
+    original_host = nddev_mimocode.require_supported_product_host
+    original_target = nddev_mimocode.require_absolute_target_argument
+    original_bootstrap = nddev_mimocode.bootstrap_lifecycle_lock
+
+    def unsupported_host(_host: Any = None) -> None:
+        raise nddev_mimocode.MiMoCodeSetupError("forced unsupported host")
+
+    def target_must_not_run(_raw_target: str | None) -> Path:
+        raise AssertionError("target validation ran before host preflight")
+
+    @contextlib.contextmanager
+    def lock_must_not_run(_target: Path) -> Any:
+        raise AssertionError("lifecycle lock ran before host preflight")
+        yield
+
+    nddev_mimocode.require_supported_product_host = unsupported_host
+    nddev_mimocode.require_absolute_target_argument = target_must_not_run
+    nddev_mimocode.bootstrap_lifecycle_lock = lock_must_not_run
+    try:
+        for command in sorted(nddev_mimocode.TARGET_BOUND_COMMANDS):
+            rc, stdout, stderr = run_main_captured(command_argv(command, target="relative-target"))
+            require(rc == 2, f"{command} unsupported host rc mismatch", errors)
+            require(stderr == "", f"{command} unsupported host JSON wrote stderr", errors)
+            payload = json.loads(stdout)
+            require(payload.get("error") == "forced unsupported host", f"{command} did not fail at host preflight", errors)
+    finally:
+        nddev_mimocode.require_supported_product_host = original_host
+        nddev_mimocode.require_absolute_target_argument = original_target
+        nddev_mimocode.bootstrap_lifecycle_lock = original_bootstrap
+
+    trace: list[str] = []
+    original_canonical = nddev_mimocode.canonical_target_for_bootstrap_lock
+    original_acquire = nddev_mimocode.acquire_file_lock
+    original_inspect = nddev_mimocode.inspect_target
+    original_host = nddev_mimocode.require_supported_product_host
+    original_target = nddev_mimocode.require_absolute_target_argument
+
+    def traced_host(_host: Any = None) -> None:
+        trace.append("host")
+
+    def traced_target(raw_target: str | None) -> Path:
+        trace.append("lexical-target")
+        return original_target(raw_target)
+
+    def traced_acquire(descriptor: int, path: Path) -> None:
+        trace.append("external-lock-acquire")
+        return original_acquire(descriptor, path)
+
+    def traced_canonical(target: Path) -> Path:
+        trace.append("target-fs-canonicalization")
+        return original_canonical(target)
+
+    def traced_inspect(target: Path) -> dict[str, Any]:
+        trace.append("status-read")
+        return original_inspect(target)
+
+    nddev_mimocode.require_supported_product_host = traced_host
+    nddev_mimocode.require_absolute_target_argument = traced_target
+    nddev_mimocode.acquire_file_lock = traced_acquire
+    nddev_mimocode.canonical_target_for_bootstrap_lock = traced_canonical
+    nddev_mimocode.inspect_target = traced_inspect
+    try:
+        with isolated_bootstrap_root(errors):
+            with tempfile.TemporaryDirectory(prefix="nddev-mimocode-preflight.") as raw:
+                target = Path(raw) / "target"
+                target.mkdir(mode=0o700)
+                target.chmod(0o700)
+                rc, stdout, stderr = run_main_captured(["status", "--target", str(target), "--json"])
+                require(rc == 0, "status preflight trace command failed", errors)
+                require(stderr == "", "status preflight trace wrote stderr", errors)
+                require(json.loads(stdout).get("state") == "unmanaged", "status preflight trace payload mismatch", errors)
+    finally:
+        nddev_mimocode.require_supported_product_host = original_host
+        nddev_mimocode.require_absolute_target_argument = original_target
+        nddev_mimocode.acquire_file_lock = original_acquire
+        nddev_mimocode.canonical_target_for_bootstrap_lock = original_canonical
+        nddev_mimocode.inspect_target = original_inspect
+    require(
+        trace[:4] == ["host", "lexical-target", "external-lock-acquire", "target-fs-canonicalization"],
+        f"preflight order mismatch: {trace}",
+        errors,
+    )
+    require("status-read" in trace and trace.index("status-read") > trace.index("target-fs-canonicalization"), "status read occurred before external lock canonicalization", errors)
 
 
 def validate_setup_profiles(errors: list[str]) -> None:
@@ -804,13 +955,22 @@ def managed_identity_snapshot(target: Path) -> dict[str, tuple[int, int, int, in
     return identity_snapshot(paths)
 
 
+def software_identity_snapshot(target: Path) -> dict[str, tuple[int, int, int, int, str | None]]:
+    paths = [target / relative for relative in nddev_mimocode.software_file_modes() if (target / relative).exists()]
+    return identity_snapshot(paths)
+
+
 def require_no_transaction_residue(target: Path, message: str, errors: list[str]) -> None:
     if not target.exists():
         return
     residue = [
         str(path.relative_to(target))
         for path in target.rglob("*")
-        if ".nddev.tmp." in path.name or ".stage." in path.name or ".rollback." in path.name
+        if ".nddev.tmp." in path.name
+        or ".stage." in path.name
+        or ".rollback." in path.name
+        or ".retired." in path.name
+        or ".recovery." in path.name
     ]
     require(not residue, f"{message}: {residue}", errors)
 
@@ -1093,11 +1253,10 @@ def validate_transaction_faults(errors: list[str]) -> None:
             require_no_transaction_residue(target, "managed postcondition tamper left residue", errors)
 
             target = make_managed_target(root / "managed-rollback-one-shot")
-            before_managed = nddev_mimocode.current_managed_snapshot(target)
+            before_managed = managed_identity_snapshot(target)
             before_backup = nddev_mimocode.backup_pool_snapshot(target)
-            before_config = before_managed[nddev_mimocode.MIMOCODE_CONFIG_RELATIVE]
             original_verify_managed = nddev_mimocode.verify_managed_state
-            original_create_stage = nddev_mimocode.create_staged_file
+            original_fsync_directory = nddev_mimocode.fsync_directory
             rollback_armed = {"value": False}
             rollback_failed = {"value": False}
 
@@ -1107,14 +1266,14 @@ def validate_transaction_faults(errors: list[str]) -> None:
                     rollback_armed["value"] = True
                     raise nddev_mimocode.ConcurrentTargetChange("forced managed postcondition failure")
 
-            def one_shot_rollback_stage(path: Path, content: bytes, mode: int) -> Path:
-                if rollback_armed["value"] and not rollback_failed["value"] and path == target / nddev_mimocode.MIMOCODE_CONFIG_RELATIVE and content == before_config:
+            def one_shot_rollback_parent_fsync(path: Path, label: str) -> None:
+                if rollback_armed["value"] and not rollback_failed["value"] and label.startswith("parent directory after rollback restore "):
                     rollback_failed["value"] = True
-                    raise OSError("forced managed rollback stage failure")
-                return original_create_stage(path, content, mode)
+                    raise OSError("forced managed rollback parent fsync failure")
+                return original_fsync_directory(path, label)
 
             nddev_mimocode.verify_managed_state = original_fails_then_rollback_fault
-            nddev_mimocode.create_staged_file = one_shot_rollback_stage
+            nddev_mimocode.fsync_directory = one_shot_rollback_parent_fsync
             try:
                 require_exception(
                     lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch"),
@@ -1124,9 +1283,9 @@ def validate_transaction_faults(errors: list[str]) -> None:
                 )
             finally:
                 nddev_mimocode.verify_managed_state = original_verify_managed
-                nddev_mimocode.create_staged_file = original_create_stage
+                nddev_mimocode.fsync_directory = original_fsync_directory
             require(rollback_failed["value"], "managed rollback one-shot fault was not exercised", errors)
-            require(nddev_mimocode.current_managed_snapshot(target) == before_managed, "managed rollback one-shot fault left mixed managed state", errors)
+            require(managed_identity_snapshot(target) == before_managed, "managed rollback one-shot fault left mixed managed objects", errors)
             require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "managed rollback one-shot fault changed backup state", errors)
             require_no_transaction_residue(target, "managed rollback one-shot fault left residue", errors)
 
@@ -1150,6 +1309,15 @@ def validate_transaction_faults(errors: list[str]) -> None:
             before_restore = nddev_mimocode.current_managed_snapshot(target)
             require_manager_failure(lambda: nddev_mimocode.restore_backup(target, 0), "tampered backup payload must be rejected", errors)
             require(nddev_mimocode.current_managed_snapshot(target) == before_restore, "tampered backup restore mutated target", errors)
+
+            target = make_managed_target(root / "backup-extra-empty-dir")
+            nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch")
+            extra_dir = nddev_mimocode.backup_pool(target) / "0" / "empty-extra"
+            extra_dir.mkdir(mode=0o700)
+            extra_dir.chmod(0o700)
+            before_restore = nddev_mimocode.current_managed_snapshot(target)
+            require_manager_failure(lambda: nddev_mimocode.restore_backup(target, 0), "backup slot extra empty directory must be rejected", errors)
+            require(nddev_mimocode.current_managed_snapshot(target) == before_restore, "extra backup directory restore mutated target", errors)
 
             target = make_managed_target(root / "rotation")
             for index in range(12):
@@ -1238,34 +1406,56 @@ def validate_transaction_faults(errors: list[str]) -> None:
             require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "backup rollback one-shot changed backup state", errors)
             require_no_transaction_residue(target, "backup rollback one-shot left residue", errors)
 
+            target = make_managed_target(root / "backup-cleanup-retry")
+            nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch")
+            before_backup = nddev_mimocode.backup_pool_snapshot(target)
+            original_rmdir = nddev_mimocode.rmdir_if_empty_durable
+            cleanup_failed = {"value": False}
+
+            def fail_retired_cleanup_once(path: Path) -> bool:
+                if ".retired." in str(path) and not cleanup_failed["value"]:
+                    cleanup_failed["value"] = True
+                    raise OSError("forced backup retired cleanup failure")
+                return original_rmdir(path)
+
+            nddev_mimocode.rmdir_if_empty_durable = fail_retired_cleanup_once
+            try:
+                switched = nddev_mimocode.mutate_setup(target, "nddev-builder", "full-auto", "switch")
+            finally:
+                nddev_mimocode.rmdir_if_empty_durable = original_rmdir
+            require(cleanup_failed["value"], "backup retired cleanup one-shot fault was not exercised", errors)
+            require(switched.get("backup_slot") == 0, "backup cleanup retry switch did not create backup", errors)
+            require(nddev_mimocode.backup_pool_snapshot(target) != before_backup, "backup cleanup retry did not advance backup pool", errors)
+            require_no_transaction_residue(target, "backup cleanup retry left residue", errors)
+
             target = (root / "remove-cli").resolve()
             make_fake_software(target)
-            before = nddev_mimocode.current_software_snapshot(target)
-            original_unlink = Path.unlink
-            removed_first = {"value": False}
+            before = software_identity_snapshot(target)
+            original_replace = nddev_mimocode.os.replace
+            moved_first = {"value": False}
 
-            def failing_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
-                if self == nddev_mimocode.software_tree_binary(target):
-                    removed_first["value"] = True
-                    return original_unlink(self, *args, **kwargs)
-                if removed_first["value"] and self == nddev_mimocode.mimo_executable(target):
-                    raise OSError("forced software unlink failure")
-                return original_unlink(self, *args, **kwargs)
+            def failing_remove_hold(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+                source_path = Path(source)
+                if source_path == nddev_mimocode.software_tree_binary(target):
+                    moved_first["value"] = True
+                    return original_replace(source, destination, *args, **kwargs)
+                if moved_first["value"] and source_path == nddev_mimocode.mimo_executable(target):
+                    raise OSError("forced software hold failure")
+                return original_replace(source, destination, *args, **kwargs)
 
-            Path.unlink = failing_unlink
+            nddev_mimocode.os.replace = failing_remove_hold
             try:
-                require_exception(lambda: nddev_mimocode.remove_cli(target), OSError, "forced remove-cli unlink failure must propagate", errors)
+                require_exception(lambda: nddev_mimocode.remove_cli(target), OSError, "forced remove-cli hold failure must propagate", errors)
             finally:
-                Path.unlink = original_unlink
-            require(nddev_mimocode.current_software_snapshot(target) == before, "remove-cli unlink failure did not rollback exact software state", errors)
-            require_no_transaction_residue(target, "remove-cli unlink failure left residue", errors)
+                nddev_mimocode.os.replace = original_replace
+            require(software_identity_snapshot(target) == before, "remove-cli hold failure did not rollback exact software objects", errors)
+            require_no_transaction_residue(target, "remove-cli hold failure left residue", errors)
 
             target = (root / "software-rollback").resolve()
             old_binary = b"old-binary\n"
             new_binary = b"new-binary\n"
             make_fake_software(target, old_binary)
-            before_software = nddev_mimocode.current_software_snapshot(target)
-            old_manifest = (target / nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE).read_bytes()
+            before_software = software_identity_snapshot(target)
             original_host = nddev_mimocode.require_supported_product_host
             original_status = nddev_mimocode.software_status
             original_selected = nddev_mimocode.selected_asset
@@ -1274,9 +1464,10 @@ def validate_transaction_faults(errors: list[str]) -> None:
             original_installer = nddev_mimocode.read_pinned_installer
             original_run_installer = nddev_mimocode.run_official_installer
             original_verify = nddev_mimocode.verify_software_state
-            original_create_stage = nddev_mimocode.create_staged_file
+            original_fsync_directory = nddev_mimocode.fsync_directory
             status_calls = {"count": 0}
-            rollback_write_failed = {"value": False}
+            rollback_fsync_failed = {"value": False}
+            rollback_armed = {"value": False}
 
             nddev_mimocode.require_supported_product_host = lambda _host=None: None
             def fake_status(_target: Path) -> dict[str, Any]:
@@ -1305,25 +1496,22 @@ def validate_transaction_faults(errors: list[str]) -> None:
             def failing_postcondition(target_arg: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str) -> None:
                 original_verify(target_arg, desired, label)
                 if label == "software install postcondition":
+                    rollback_armed["value"] = True
                     raise nddev_mimocode.ConcurrentTargetChange("forced software postcondition failure")
 
-            def failing_rollback_manifest(path: Path, content: bytes, mode: int) -> Path:
-                if (
-                    path == target / nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE
-                    and content == old_manifest
-                    and not rollback_write_failed["value"]
-                ):
-                    rollback_write_failed["value"] = True
-                    raise OSError("forced rollback manifest write failure")
-                return original_create_stage(path, content, mode)
+            def failing_rollback_parent_fsync(path: Path, label: str) -> None:
+                if rollback_armed["value"] and not rollback_fsync_failed["value"] and label.startswith("parent directory after rollback restore "):
+                    rollback_fsync_failed["value"] = True
+                    raise OSError("forced rollback parent fsync failure")
+                return original_fsync_directory(path, label)
 
             nddev_mimocode.verify_software_state = failing_postcondition
-            nddev_mimocode.create_staged_file = failing_rollback_manifest
+            nddev_mimocode.fsync_directory = failing_rollback_parent_fsync
             try:
                 require_exception(
                     lambda: nddev_mimocode.install_or_update_cli(target, operation="update-cli"),
                     nddev_mimocode.ConcurrentTargetChange,
-                    "software rollback one-shot write failure must re-raise original postcondition failure",
+                    "software rollback one-shot parent fsync failure must re-raise original postcondition failure",
                     errors,
                 )
             finally:
@@ -1335,23 +1523,23 @@ def validate_transaction_faults(errors: list[str]) -> None:
                 nddev_mimocode.read_pinned_installer = original_installer
                 nddev_mimocode.run_official_installer = original_run_installer
                 nddev_mimocode.verify_software_state = original_verify
-                nddev_mimocode.create_staged_file = original_create_stage
-            require(rollback_write_failed["value"], "software rollback one-shot write fault was not exercised", errors)
-            require(nddev_mimocode.current_software_snapshot(target) == before_software, "software rollback one-shot write failure left mixed software state", errors)
-            require_no_transaction_residue(target, "software rollback write failure left residue", errors)
+                nddev_mimocode.fsync_directory = original_fsync_directory
+            require(rollback_fsync_failed["value"], "software rollback one-shot parent fsync fault was not exercised", errors)
+            require(software_identity_snapshot(target) == before_software, "software rollback one-shot parent fsync failure left mixed software objects", errors)
+            require_no_transaction_residue(target, "software rollback parent fsync failure left residue", errors)
 
-            for fault_kind in ("replace", "file-fsync", "parent-fsync"):
+            for fault_kind in ("replace", "parent-fsync"):
                 target = (root / f"software-rollback-{fault_kind}").resolve()
                 make_fake_software(target, old_binary)
-                before_software = nddev_mimocode.current_software_snapshot(target)
+                before_software = software_identity_snapshot(target)
+                before_software_payload = nddev_mimocode.current_software_snapshot(target)
                 desired_software = {
                     nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME: (new_binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
                     Path("bin") / nddev_mimocode.COMMAND_NAME: (new_binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
                     nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE: (fake_software_manifest(new_binary, nddev_mimocode.TESTED_VERSION), nddev_mimocode.OWNER_FILE_MODE),
                 }
                 original_verify = nddev_mimocode.verify_software_state
-                original_commit = nddev_mimocode.commit_staged_file
-                original_fsync = nddev_mimocode.os.fsync
+                original_replace = nddev_mimocode.os.replace
                 original_fsync_directory = nddev_mimocode.fsync_directory
                 rollback_armed = {"value": False}
                 rollback_failed = {"value": False}
@@ -1362,34 +1550,32 @@ def validate_transaction_faults(errors: list[str]) -> None:
                         rollback_armed["value"] = True
                         raise nddev_mimocode.ConcurrentTargetChange("forced software postcondition failure")
 
-                def one_shot_rollback_commit(temporary: Path, path: Path) -> None:
-                    if rollback_armed["value"] and fault_kind == "replace" and not rollback_failed["value"] and path == target / nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE:
+                def one_shot_rollback_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+                    if (
+                        rollback_armed["value"]
+                        and fault_kind == "replace"
+                        and not rollback_failed["value"]
+                        and Path(destination) == target / nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE
+                    ):
                         rollback_failed["value"] = True
                         raise OSError("forced software rollback replace failure")
-                    return original_commit(temporary, path)
-
-                def one_shot_rollback_fsync(descriptor: int) -> None:
-                    if rollback_armed["value"] and fault_kind == "file-fsync" and not rollback_failed["value"]:
-                        rollback_failed["value"] = True
-                        raise OSError("forced software rollback file fsync failure")
-                    return original_fsync(descriptor)
+                    return original_replace(source, destination, *args, **kwargs)
 
                 def one_shot_rollback_parent_fsync(path: Path, label: str) -> None:
-                    if rollback_armed["value"] and fault_kind == "parent-fsync" and not rollback_failed["value"] and label.startswith("parent directory for "):
+                    if rollback_armed["value"] and fault_kind == "parent-fsync" and not rollback_failed["value"] and label.startswith("parent directory after rollback restore "):
                         rollback_failed["value"] = True
                         raise OSError("forced software rollback parent fsync failure")
                     return original_fsync_directory(path, label)
 
                 nddev_mimocode.verify_software_state = software_original_fails
-                nddev_mimocode.commit_staged_file = one_shot_rollback_commit
-                nddev_mimocode.os.fsync = one_shot_rollback_fsync
+                nddev_mimocode.os.replace = one_shot_rollback_replace
                 nddev_mimocode.fsync_directory = one_shot_rollback_parent_fsync
                 try:
                     require_exception(
                         lambda: nddev_mimocode.apply_software_state(
                             target,
                             desired_software,
-                            expected_before=before_software,
+                            expected_before=before_software_payload,
                             rollback_on_error=True,
                             label="software test",
                         ),
@@ -1399,11 +1585,10 @@ def validate_transaction_faults(errors: list[str]) -> None:
                     )
                 finally:
                     nddev_mimocode.verify_software_state = original_verify
-                    nddev_mimocode.commit_staged_file = original_commit
-                    nddev_mimocode.os.fsync = original_fsync
+                    nddev_mimocode.os.replace = original_replace
                     nddev_mimocode.fsync_directory = original_fsync_directory
                 require(rollback_failed["value"], f"software rollback one-shot {fault_kind} fault was not exercised", errors)
-                require(nddev_mimocode.current_software_snapshot(target) == before_software, f"software rollback one-shot {fault_kind} left mixed state", errors)
+                require(software_identity_snapshot(target) == before_software, f"software rollback one-shot {fault_kind} left mixed software objects", errors)
                 require_no_transaction_residue(target, f"software rollback one-shot {fault_kind} left residue", errors)
 
             target = (root / "software-rollback-unlink").resolve()
@@ -1555,7 +1740,7 @@ def validate_dual_locks(errors: list[str]) -> None:
             target = parent / "target"
             with nddev_mimocode.locked_new_or_existing_target(target) as canonical:
                 require(canonical == target.resolve(), "locked target canonical mismatch", errors)
-                external = nddev_mimocode.bootstrap_lock_path(canonical)
+                external = nddev_mimocode.bootstrap_lock_path(target)
                 internal = nddev_mimocode.lock_path(canonical)
                 require(str(external).startswith(str(injected)), "external lock used real system root", errors)
                 require(external.exists(), "external lock missing", errors)
@@ -1698,6 +1883,7 @@ def main() -> int:
     validate_versions(errors)
     validate_assets(errors)
     validate_platform_selection(errors)
+    validate_cli_json_and_preflight_boundary(errors)
     validate_setup_profiles(errors)
     validate_launch_environment(errors)
     validate_project_boundary(errors)

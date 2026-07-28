@@ -277,6 +277,21 @@ FORBIDDEN_MANAGER_ENV_PREFIXES = (
     "NDDEV_MIMOCODE_BOOTSTRAP_",
     "NDDEV_MIMOCODE_LOCK_",
 )
+TARGET_BOUND_COMMANDS = {
+    "status",
+    "software-status",
+    "plan",
+    "install",
+    "update",
+    "switch",
+    "migrate",
+    "restore",
+    "remove",
+    "install-cli",
+    "update-cli",
+    "remove-cli",
+    "launch",
+}
 
 
 class MiMoCodeSetupError(Exception):
@@ -285,6 +300,15 @@ class MiMoCodeSetupError(Exception):
 
 class ConcurrentTargetChange(MiMoCodeSetupError):
     """A fail-closed target race."""
+
+
+class CliArgumentError(Exception):
+    """An argparse error that can be rendered through the public JSON boundary."""
+
+
+class JsonBoundaryArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise CliArgumentError(message)
 
 
 def fail(message: str) -> NoReturn:
@@ -434,6 +458,176 @@ def cleanup_transaction_residue(target: Path) -> None:
             or ".recovery." in name
         ):
             cleanup_path_with_retries(path)
+
+
+FileObjectRecord = dict[str, Any]
+FileObjectSnapshot = dict[Path, FileObjectRecord]
+
+
+def absent_file_object() -> FileObjectRecord:
+    return {"present": False}
+
+
+def file_object_record(path: Path, label: str, *, owner_only: bool, max_bytes: int) -> FileObjectRecord:
+    if not path_present(path):
+        return absent_file_object()
+    content, info = read_regular_file(path, label, owner_only=owner_only, max_bytes=max_bytes)
+    return {
+        "present": True,
+        "content": content,
+        "mode": stat.S_IMODE(info.st_mode),
+        "dev": info.st_dev,
+        "ino": info.st_ino,
+        "mtime_ns": info.st_mtime_ns,
+        "size": info.st_size,
+    }
+
+
+def file_object_matches(
+    path: Path,
+    record: FileObjectRecord,
+    label: str,
+    *,
+    owner_only: bool,
+    max_bytes: int,
+) -> bool:
+    if not record.get("present"):
+        return not path_present(path)
+    if not path_present(path):
+        return False
+    try:
+        current = file_object_record(path, label, owner_only=owner_only, max_bytes=max_bytes)
+    except MiMoCodeSetupError:
+        return False
+    return current == record
+
+
+def verify_file_object_snapshot(
+    target: Path,
+    snapshot: FileObjectSnapshot,
+    label: str,
+    *,
+    owner_only_for: Any,
+    max_bytes_for: Any,
+) -> None:
+    for relative, record in snapshot.items():
+        path = target / relative
+        if not file_object_matches(
+            path,
+            record,
+            f"{label} file {relative}",
+            owner_only=owner_only_for(relative),
+            max_bytes=max_bytes_for(relative),
+        ):
+            fail_concurrent(f"{label} did not restore exact file object: {relative}")
+
+
+class FileUndoTransaction:
+    def __init__(
+        self,
+        target: Path,
+        before: FileObjectSnapshot,
+        *,
+        label: str,
+        owner_only_for: Any,
+        max_bytes_for: Any,
+    ) -> None:
+        self.target = target
+        self.before = before
+        self.label = label
+        self.owner_only_for = owner_only_for
+        self.max_bytes_for = max_bytes_for
+        self.undo_root = target / f".nddev-mimocode.rollback.{os.getpid()}.{time.time_ns()}"
+        self.records: dict[Path, Path | None] = {}
+
+    def _undo_path(self, relative: Path) -> Path:
+        return self.undo_root / str(len(self.records)) / relative
+
+    def _ensure_undo_parent(self, undo_path: Path) -> None:
+        undo_relative = undo_path.parent.relative_to(self.target)
+        ensure_private_directory_under_target(self.target, undo_relative, "rollback parent")
+
+    def hold(self, relative: Path, path: Path) -> None:
+        if relative in self.records:
+            return
+        record = self.before[relative]
+        undo_path: Path | None = None
+        if record.get("present"):
+            if not file_object_matches(
+                path,
+                record,
+                f"{self.label} pre-state file {relative}",
+                owner_only=self.owner_only_for(relative),
+                max_bytes=self.max_bytes_for(relative),
+            ):
+                fail_concurrent(f"{self.label} pre-state changed before mutation: {relative}")
+            undo_path = self._undo_path(relative)
+            self._ensure_undo_parent(undo_path)
+            self.records[relative] = undo_path
+            os.replace(path, undo_path)
+            fsync_directory_with_retries(path.parent, f"parent directory after holding {relative}")
+            fsync_directory_with_retries(undo_path.parent, f"rollback parent after holding {relative}")
+        else:
+            self.records[relative] = None
+
+    def rollback_once(self) -> None:
+        for relative in reversed(list(self.records)):
+            path = self.target / relative
+            record = self.before[relative]
+            undo_path = self.records[relative]
+            if not record.get("present"):
+                if path_present(path):
+                    require_regular_file(
+                        path,
+                        f"{self.label} rollback created file {relative}",
+                        max_bytes=self.max_bytes_for(relative),
+                    )
+                    unlink_file_durable(path)
+                continue
+            if file_object_matches(
+                path,
+                record,
+                f"{self.label} rollback restored file {relative}",
+                owner_only=self.owner_only_for(relative),
+                max_bytes=self.max_bytes_for(relative),
+            ):
+                fsync_directory_with_retries(path.parent, f"parent directory after rollback restore {relative}")
+                continue
+            if path_present(path):
+                require_regular_file(
+                    path,
+                    f"{self.label} rollback replacement file {relative}",
+                    max_bytes=self.max_bytes_for(relative),
+                )
+                unlink_file_durable(path)
+            ensure_private_parent(self.target, relative)
+            if undo_path is None or not path_present(undo_path):
+                fail_concurrent(f"{self.label} rollback material is missing: {relative}")
+            os.replace(undo_path, path)
+            fsync_directory_with_retries(path.parent, f"parent directory after rollback restore {relative}")
+            fsync_directory_with_retries(undo_path.parent, f"rollback parent after rollback restore {relative}")
+        verify_file_object_snapshot(
+            self.target,
+            self.before,
+            self.label,
+            owner_only_for=self.owner_only_for,
+            max_bytes_for=self.max_bytes_for,
+        )
+        cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
+
+    def rollback(self) -> None:
+        last: BaseException | None = None
+        for _attempt in range(3):
+            try:
+                self.rollback_once()
+                return
+            except BaseException as exc:
+                last = exc
+        if last is not None:
+            raise last
+
+    def commit_cleanup(self) -> None:
+        cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
 
 
 def identity_of(info: os.stat_result) -> tuple[int, int]:
@@ -936,8 +1130,8 @@ def lock_path(target: Path) -> Path:
     return lock_directory_path(target) / LOCK_FILE_NAME
 
 
-def bootstrap_lock_key(canonical_target: Path) -> str:
-    return hashlib.sha256(f"{PRODUCT_NAME}\0{canonical_target}".encode("utf-8")).hexdigest()
+def bootstrap_lock_key(target: Path) -> str:
+    return hashlib.sha256(f"{PRODUCT_NAME}\0{target}".encode("utf-8")).hexdigest()
 
 
 def fixed_system_temp_root() -> Path:
@@ -949,7 +1143,7 @@ def fixed_system_temp_root() -> Path:
     return resolved
 
 
-def bootstrap_lock_pool(_canonical_target: Path) -> Path:
+def bootstrap_lock_pool(_target: Path) -> Path:
     uid: int | str
     if hasattr(os, "geteuid"):
         uid = os.geteuid()
@@ -960,8 +1154,8 @@ def bootstrap_lock_pool(_canonical_target: Path) -> Path:
     return fixed_system_temp_root() / f".{PRODUCT_NAME}-{uid}-lifecycle-locks"
 
 
-def bootstrap_lock_path(canonical_target: Path) -> Path:
-    return bootstrap_lock_pool(canonical_target) / f"{bootstrap_lock_key(canonical_target)}{BOOTSTRAP_LOCK_SUFFIX}"
+def bootstrap_lock_path(target: Path) -> Path:
+    return bootstrap_lock_pool(target) / f"{bootstrap_lock_key(target)}{BOOTSTRAP_LOCK_SUFFIX}"
 
 
 def require_safe_target_parent_for_creation(parent: Path) -> None:
@@ -1111,18 +1305,18 @@ def verify_locked_file_identity(descriptor: int, path: Path, label: str) -> None
         fail(f"{label} must be owned by the current user with mode 0600")
 
 
-def bootstrap_lock_binding(canonical_target: Path) -> dict[str, Any]:
+def bootstrap_lock_binding(canonical_target: Path, target_key: str) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "product_name": PRODUCT_NAME,
         "canonical_target": str(canonical_target),
-        "target_key": bootstrap_lock_key(canonical_target),
+        "target_key": target_key,
     }
 
 
-def validate_bootstrap_lock_binding(descriptor: int, path: Path, canonical_target: Path) -> None:
+def validate_bootstrap_lock_binding(descriptor: int, path: Path, canonical_target: Path, target_key: str) -> None:
     verify_locked_file_identity(descriptor, path, "bootstrap lifecycle lock file")
-    desired = bootstrap_lock_binding(canonical_target)
+    desired = bootstrap_lock_binding(canonical_target, target_key)
     content = read_lock_file_descriptor(descriptor, label="bootstrap lifecycle lock file")
     if not content:
         write_lock_file_descriptor(descriptor, canonical_json(desired), label="bootstrap lifecycle lock file")
@@ -1136,15 +1330,18 @@ def validate_bootstrap_lock_binding(descriptor: int, path: Path, canonical_targe
 
 @contextlib.contextmanager
 def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
-    canonical_target = canonical_target_for_bootstrap_lock(target)
-    pool = ensure_bootstrap_lock_pool(canonical_target)
-    path = pool / f"{bootstrap_lock_key(canonical_target)}{BOOTSTRAP_LOCK_SUFFIX}"
+    if not target.is_absolute():
+        fail("--target must be an absolute path")
+    target_key = bootstrap_lock_key(target)
+    pool = ensure_bootstrap_lock_pool(target)
+    path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
     descriptor = open_persistent_lock_file(path, "bootstrap lifecycle lock file", create=True)
     acquired = False
     try:
         acquire_file_lock(descriptor, path)
         acquired = True
-        validate_bootstrap_lock_binding(descriptor, path, canonical_target)
+        canonical_target = canonical_target_for_bootstrap_lock(target)
+        validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
         yield canonical_target
     finally:
         if acquired:
@@ -1248,7 +1445,7 @@ def locked_inspection_target(target: Path) -> Iterator[Path]:
 def require_absolute_target_argument(raw_target: str | None) -> Path:
     if not raw_target:
         fail("an explicit --target absolute path is required")
-    target = Path(raw_target).expanduser()
+    target = Path(raw_target)
     if not target.is_absolute():
         fail("--target must be an absolute path")
     return target
@@ -1429,6 +1626,33 @@ def current_managed_snapshot(target: Path, paths: tuple[Path, ...] = ALL_MANAGED
     return snapshot
 
 
+def managed_owner_only(_relative: Path) -> bool:
+    return True
+
+
+def managed_max_bytes(_relative: Path) -> int:
+    return MANAGED_PAYLOAD_MAX_BYTES
+
+
+def current_managed_object_snapshot(target: Path, paths: tuple[Path, ...] = ALL_MANAGED_PATHS) -> FileObjectSnapshot:
+    return {
+        relative: file_object_record(
+            target / relative,
+            f"managed file {relative}",
+            owner_only=True,
+            max_bytes=MANAGED_PAYLOAD_MAX_BYTES,
+        )
+        for relative in paths
+    }
+
+
+def managed_payload_snapshot(snapshot: FileObjectSnapshot) -> dict[Path, bytes | None]:
+    return {
+        relative: (record["content"] if record.get("present") else None)
+        for relative, record in snapshot.items()
+    }
+
+
 def prune_empty_managed_dirs(target: Path, paths: tuple[Path, ...] = ALL_MANAGED_PATHS) -> None:
     candidates = sorted(
         {(target / relative).parent for relative in paths},
@@ -1471,11 +1695,20 @@ def apply_managed_state(
     expected_before: dict[Path, bytes | None] | None = None,
     rollback_on_error: bool,
     label: str,
-) -> None:
+    cleanup_on_success: bool = True,
+) -> FileUndoTransaction:
     paths = tuple(desired)
-    before = current_managed_snapshot(target, paths)
+    before_objects = current_managed_object_snapshot(target, paths)
+    before = managed_payload_snapshot(before_objects)
     if expected_before is not None and before != {relative: expected_before.get(relative) for relative in paths}:
         fail_concurrent(f"{label} pre-state changed before mutation")
+    undo = FileUndoTransaction(
+        target,
+        before_objects,
+        label=label,
+        owner_only_for=managed_owner_only,
+        max_bytes_for=managed_max_bytes,
+    )
     staged: dict[Path, Path] = {}
 
     def cleanup_staged() -> None:
@@ -1494,29 +1727,58 @@ def apply_managed_state(
             if content is None:
                 if path_present(path):
                     require_regular_file(path, f"{label} managed file {relative}", owner_only=True)
-                    unlink_file_durable(path)
+                    undo.hold(relative, path)
                 continue
             temporary = staged[relative]
+            undo.hold(relative, path)
             commit_staged_file(temporary, path)
             del staged[relative]
         verify_managed_state(target, desired, label)
+        if cleanup_on_success:
+            undo.commit_cleanup()
     except BaseException:
         cleanup_staged()
         if rollback_on_error:
-            restore_managed_snapshot_with_retries(target, before, label=f"{label} rollback")
+            undo.rollback()
         raise
     finally:
         cleanup_staged()
     with contextlib.suppress(OSError):
         prune_empty_managed_dirs(target, tuple(desired))
+    return undo
 
 
-def restore_managed_snapshot_with_retries(target: Path, snapshot: dict[Path, bytes | None], *, label: str) -> None:
+def restore_managed_snapshot_with_retries(target: Path, snapshot: FileObjectSnapshot | dict[Path, bytes | None], *, label: str) -> None:
     last: BaseException | None = None
+    if all(isinstance(record, dict) for record in snapshot.values()):
+        object_snapshot = snapshot  # type: ignore[assignment]
+        for _attempt in range(3):
+            try:
+                verify_file_object_snapshot(
+                    target,
+                    object_snapshot,
+                    label,
+                    owner_only_for=managed_owner_only,
+                    max_bytes_for=managed_max_bytes,
+                )
+                cleanup_transaction_residue(target)
+                return
+            except BaseException as exc:
+                last = exc
+                cleanup_transaction_residue(target)
+        if last is not None:
+            raise last
+        return
+    desired = snapshot  # type: ignore[assignment]
     for attempt in range(3):
         try:
-            apply_managed_state(target, snapshot, rollback_on_error=False, label=f"{label} attempt {attempt + 1}")
-            verify_managed_state(target, snapshot, label)
+            apply_managed_state(
+                target,
+                desired,
+                rollback_on_error=False,
+                label=f"{label} attempt {attempt + 1}",
+            )
+            verify_managed_state(target, desired, label)
             cleanup_transaction_residue(target)
             return
         except BaseException as exc:
@@ -1526,7 +1788,7 @@ def restore_managed_snapshot_with_retries(target: Path, snapshot: dict[Path, byt
         raise last
 
 
-def restore_snapshot(target: Path, snapshot: dict[Path, bytes | None]) -> None:
+def restore_snapshot(target: Path, snapshot: FileObjectSnapshot | dict[Path, bytes | None]) -> None:
     restore_managed_snapshot_with_retries(target, snapshot, label="rollback restore")
 
 
@@ -1535,13 +1797,15 @@ def replace_managed_state(
     desired: dict[Path, bytes | None],
     *,
     expected_before: dict[Path, bytes | None] | None = None,
-) -> None:
-    apply_managed_state(
+    cleanup_on_success: bool = True,
+) -> FileUndoTransaction:
+    return apply_managed_state(
         target,
         desired,
         expected_before=expected_before,
         rollback_on_error=True,
         label="managed replace",
+        cleanup_on_success=cleanup_on_success,
     )
 
 
@@ -1638,8 +1902,7 @@ def copy_tree_durable(source: Path, destination: Path) -> None:
 
 def write_backup_file(slot_dir: Path, relative: Path, content: bytes) -> None:
     destination = slot_dir / relative
-    destination.parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-    destination.parent.chmod(OWNER_DIRECTORY_MODE)
+    ensure_private_directory_under_target(slot_dir, relative.parent, "backup parent")
     write_durable_file(destination, content, OWNER_FILE_MODE)
 
 
@@ -1669,7 +1932,6 @@ def restore_backup_pool_from_source(
         try:
             if backup_pool_snapshot(target) == expected_snapshot:
                 fsync_directory_with_retries(target, "target directory after backup pool restore")
-                cleanup_transaction_residue(target)
                 return
             if path_present(pool):
                 cleanup_path_with_retries(pool, raise_on_failure=True)
@@ -1678,7 +1940,6 @@ def restore_backup_pool_from_source(
                 fsync_directory_with_retries(target, "target directory after backup pool restore")
             if backup_pool_snapshot(target) != expected_snapshot:
                 fail_concurrent("backup pool rollback did not restore exact pre-state")
-            cleanup_transaction_residue(target)
             return
         except BaseException as exc:
             last = exc
@@ -1712,18 +1973,17 @@ def publish_backup_pool(
         fsync_directory(target, "target directory after backup pool replace")
         if backup_pool_snapshot(target) != desired_snapshot:
             fail_concurrent("backup pool publication did not produce exact desired state")
-        cleanup_path_with_retries(retired_pool)
-        cleanup_path_with_retries(recovery_pool)
+        cleanup_path_with_retries(retired_pool, raise_on_failure=True)
+        cleanup_path_with_retries(recovery_pool, raise_on_failure=True)
     except BaseException:
         if installed_new and path_present(pool):
-            cleanup_path_with_retries(pool)
+            cleanup_path_with_retries(pool, raise_on_failure=True)
         restore_source = retired_pool if path_present(retired_pool) else recovery_pool if path_present(recovery_pool) else None
         restore_backup_pool_from_source(target, restore_source, expected_before)
-        cleanup_path_with_retries(staged_pool)
-        cleanup_path_with_retries(retired_pool)
-        cleanup_path_with_retries(recovery_pool)
-        with contextlib.suppress(OSError):
-            fsync_directory(target, "target directory after backup pool rollback")
+        cleanup_path_with_retries(staged_pool, raise_on_failure=True)
+        cleanup_path_with_retries(retired_pool, raise_on_failure=True)
+        cleanup_path_with_retries(recovery_pool, raise_on_failure=True)
+        fsync_directory_with_retries(target, "target directory after backup pool rollback")
         raise
 
 
@@ -1787,8 +2047,7 @@ def prepare_backup_transaction(
         return before, recovery, staged
     except BaseException:
         if recovery is not None:
-            cleanup_path_with_retries(recovery)
-        cleanup_transaction_residue(target)
+            cleanup_path_with_retries(recovery, raise_on_failure=True)
         raise
 
 
@@ -1799,12 +2058,11 @@ def rollback_backup_transaction(
     staged: Path | None,
 ) -> None:
     if staged is not None:
-        cleanup_path_with_retries(staged)
+        cleanup_path_with_retries(staged, raise_on_failure=True)
     if backup_pool_snapshot(target) != before:
         restore_backup_pool_from_source(target, recovery if recovery is not None and path_present(recovery) else None, before)
     if recovery is not None:
-        cleanup_path_with_retries(recovery)
-    cleanup_transaction_residue(target)
+        cleanup_path_with_retries(recovery, raise_on_failure=True)
 
 
 def finish_backup_transaction(
@@ -1815,8 +2073,7 @@ def finish_backup_transaction(
 ) -> int:
     publish_backup_pool(target, staged, before)
     if recovery is not None:
-        cleanup_path_with_retries(recovery)
-    cleanup_transaction_residue(target)
+        cleanup_path_with_retries(recovery, raise_on_failure=True)
     return 0
 
 
@@ -1881,13 +2138,25 @@ def load_backup_slot(target: Path, slot_dir: Path, slot: int) -> tuple[dict[str,
             fail(f"backup file record mismatch: {relative}")
         files[relative] = content
     expected_regular = {Path(BACKUP_NAME), *expected_paths}
+    expected_directories = {Path(".")}
+    for expected in expected_regular:
+        parent = expected.parent
+        while parent != Path("."):
+            expected_directories.add(parent)
+            parent = parent.parent
     for path in sorted(slot_dir.rglob("*"), key=lambda item: str(item.relative_to(slot_dir))):
         info = path.lstat()
-        if stat.S_ISDIR(info.st_mode):
-            continue
         relative = path.relative_to(slot_dir)
+        if stat.S_ISDIR(info.st_mode):
+            if relative not in expected_directories:
+                fail(f"backup slot contains unrecorded directory: {relative}")
+            if not is_owner_private_directory(info):
+                fail(f"backup slot directory must be owned by the current user with mode 0700: {relative}")
+            continue
         if relative not in expected_regular:
             fail(f"backup slot contains unrecorded payload: {relative}")
+        if not stat.S_ISREG(info.st_mode):
+            fail(f"backup slot contains unsupported payload type: {relative}")
     return envelope, files
 
 
@@ -1918,7 +2187,9 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
         desired[Path(STAMP_NAME)] = canonical_json(stamp)
         changed = changed_paths(canonical_target, desired)
         backup_slot: int | None = None
-        snapshot = current_managed_snapshot(canonical_target)
+        snapshot = current_managed_object_snapshot(canonical_target)
+        snapshot_payload = managed_payload_snapshot(snapshot)
+        managed_undo: FileUndoTransaction | None = None
         backup_before: dict[str, tuple[str, int, str | None]] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
@@ -1926,7 +2197,12 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
             if state["state"] == "managed" and changed:
                 backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
             if changed:
-                replace_managed_state(canonical_target, desired, expected_before=snapshot)
+                managed_undo = replace_managed_state(
+                    canonical_target,
+                    desired,
+                    expected_before=snapshot_payload,
+                    cleanup_on_success=False,
+                )
             post = inspect_target(canonical_target)
             if changed:
                 verify_managed_state(canonical_target, desired, "managed postcondition")
@@ -1934,8 +2210,13 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
                 backup_slot = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
                 staged_backup = None
                 backup_recovery = None
+            if managed_undo is not None:
+                managed_undo.commit_cleanup()
         except BaseException:
-            restore_snapshot(canonical_target, snapshot)
+            if managed_undo is not None:
+                managed_undo.rollback()
+            else:
+                restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
             raise
@@ -1967,7 +2248,9 @@ def update_setup(target: Path) -> dict[str, Any]:
         stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
         desired[Path(STAMP_NAME)] = canonical_json(stamp)
         changed = changed_paths(canonical_target, desired)
-        snapshot = current_managed_snapshot(canonical_target)
+        snapshot = current_managed_object_snapshot(canonical_target)
+        snapshot_payload = managed_payload_snapshot(snapshot)
+        managed_undo: FileUndoTransaction | None = None
         backup_before: dict[str, tuple[str, int, str | None]] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
@@ -1975,7 +2258,12 @@ def update_setup(target: Path) -> dict[str, Any]:
         try:
             if changed:
                 backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
-                replace_managed_state(canonical_target, desired, expected_before=snapshot)
+                managed_undo = replace_managed_state(
+                    canonical_target,
+                    desired,
+                    expected_before=snapshot_payload,
+                    cleanup_on_success=False,
+                )
             post = inspect_target(canonical_target)
             if changed:
                 verify_managed_state(canonical_target, desired, "update postcondition")
@@ -1983,8 +2271,13 @@ def update_setup(target: Path) -> dict[str, Any]:
                 backup_slot = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
                 staged_backup = None
                 backup_recovery = None
+            if managed_undo is not None:
+                managed_undo.commit_cleanup()
         except BaseException:
-            restore_snapshot(canonical_target, snapshot)
+            if managed_undo is not None:
+                managed_undo.rollback()
+            else:
+                restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
             raise
@@ -2037,21 +2330,32 @@ def migrate_setup(target: Path, profile_id: str | None) -> dict[str, Any]:
             fail("migrate requires a legacy managed target")
         selected_profile, desired = render_legacy_migration_desired(canonical_target, state, profile_id)
         changed = changed_paths(canonical_target, desired)
-        snapshot = current_managed_snapshot(canonical_target)
+        snapshot = current_managed_object_snapshot(canonical_target)
+        snapshot_payload = managed_payload_snapshot(snapshot)
+        managed_undo: FileUndoTransaction | None = None
         backup_before: dict[str, tuple[str, int, str | None]] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
         backup_slot: int | None = None
         try:
             backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
-            replace_managed_state(canonical_target, desired, expected_before=snapshot)
+            managed_undo = replace_managed_state(
+                canonical_target,
+                desired,
+                expected_before=snapshot_payload,
+                cleanup_on_success=False,
+            )
             post = inspect_target(canonical_target)
             verify_managed_state(canonical_target, desired, "migrate postcondition")
             backup_slot = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
             staged_backup = None
             backup_recovery = None
+            managed_undo.commit_cleanup()
         except BaseException:
-            restore_snapshot(canonical_target, snapshot)
+            if managed_undo is not None:
+                managed_undo.rollback()
+            else:
+                restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
             raise
@@ -2105,21 +2409,32 @@ def remove_setup(target: Path) -> dict[str, Any]:
         if state["state"] not in {"managed", "legacy-managed"}:
             fail("target is not managed by nddev-mimocode-app")
         paths = ALL_MANAGED_PATHS if state["state"] == "legacy-managed" else MANAGED_PATHS
-        snapshot = current_managed_snapshot(canonical_target, paths)
+        snapshot = current_managed_object_snapshot(canonical_target, paths)
+        snapshot_payload = managed_payload_snapshot(snapshot)
         desired = {relative: None for relative in paths}
+        managed_undo: FileUndoTransaction | None = None
         backup_before: dict[str, tuple[str, int, str | None]] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
         backup_slot: int | None = None
         try:
             backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
-            replace_managed_state(canonical_target, desired, expected_before=snapshot)
+            managed_undo = replace_managed_state(
+                canonical_target,
+                desired,
+                expected_before=snapshot_payload,
+                cleanup_on_success=False,
+            )
             verify_managed_state(canonical_target, desired, "remove postcondition")
             backup_slot = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
             staged_backup = None
             backup_recovery = None
+            managed_undo.commit_cleanup()
         except BaseException:
-            restore_snapshot(canonical_target, snapshot)
+            if managed_undo is not None:
+                managed_undo.rollback()
+            else:
+                restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
             raise
@@ -2140,13 +2455,24 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
             fail("target is not managed by nddev-mimocode-app")
         envelope, files = load_backup(canonical_target, slot)
         desired = restore_desired_from_backup(files)
-        snapshot = current_managed_snapshot(canonical_target)
+        snapshot = current_managed_object_snapshot(canonical_target)
+        snapshot_payload = managed_payload_snapshot(snapshot)
+        managed_undo: FileUndoTransaction | None = None
         try:
-            replace_managed_state(canonical_target, desired, expected_before=snapshot)
+            managed_undo = replace_managed_state(
+                canonical_target,
+                desired,
+                expected_before=snapshot_payload,
+                cleanup_on_success=False,
+            )
             post = inspect_target(canonical_target)
             verify_managed_state(canonical_target, desired, "restore postcondition")
+            managed_undo.commit_cleanup()
         except BaseException:
-            restore_snapshot(canonical_target, snapshot)
+            if managed_undo is not None:
+                managed_undo.rollback()
+            else:
+                restore_snapshot(canonical_target, snapshot)
             raise
     return {
         "ok": True,
@@ -2680,6 +3006,32 @@ def current_software_snapshot(target: Path) -> dict[Path, tuple[bytes | None, in
     return snapshot
 
 
+def software_owner_only(_relative: Path) -> bool:
+    return False
+
+
+def current_software_object_snapshot(target: Path) -> FileObjectSnapshot:
+    return {
+        relative: file_object_record(
+            target / relative,
+            f"software file {relative}",
+            owner_only=False,
+            max_bytes=software_max_bytes(relative),
+        )
+        for relative in software_file_modes()
+    }
+
+
+def software_payload_snapshot(snapshot: FileObjectSnapshot) -> dict[Path, tuple[bytes | None, int | None]]:
+    return {
+        relative: (
+            record["content"] if record.get("present") else None,
+            record["mode"] if record.get("present") else None,
+        )
+        for relative, record in snapshot.items()
+    }
+
+
 def verify_software_state(target: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str) -> None:
     for relative, (content, mode) in desired.items():
         path = target / relative
@@ -2715,10 +3067,19 @@ def apply_software_state(
     rollback_on_error: bool,
     label: str,
     rollback_order: bool = False,
-) -> None:
-    before = current_software_snapshot(target)
+    cleanup_on_success: bool = True,
+) -> FileUndoTransaction:
+    before_objects = current_software_object_snapshot(target)
+    before = software_payload_snapshot(before_objects)
     if expected_before is not None and before != expected_before:
         fail_concurrent(f"{label} pre-state changed before mutation")
+    undo = FileUndoTransaction(
+        target,
+        before_objects,
+        label=label,
+        owner_only_for=software_owner_only,
+        max_bytes_for=software_max_bytes,
+    )
     staged: dict[Path, Path] = {}
 
     def cleanup_staged() -> None:
@@ -2738,32 +3099,56 @@ def apply_software_state(
             if content is None:
                 if path_present(path):
                     require_regular_file(path, f"{label} software file {relative}", max_bytes=software_max_bytes(relative))
-                    unlink_file_durable(path)
+                    undo.hold(relative, path)
                 continue
             temporary = staged[relative]
+            undo.hold(relative, path)
             commit_staged_file(temporary, path)
             del staged[relative]
         verify_software_state(target, desired, label)
+        if cleanup_on_success:
+            undo.commit_cleanup()
     except BaseException:
         cleanup_staged()
         if rollback_on_error:
-            restore_software_snapshot_with_retries(target, before, label=f"{label} rollback")
+            undo.rollback()
         raise
     finally:
         cleanup_staged()
+    return undo
 
 
 def restore_software_snapshot_with_retries(
     target: Path,
-    snapshot: dict[Path, tuple[bytes | None, int | None]],
+    snapshot: FileObjectSnapshot | dict[Path, tuple[bytes | None, int | None]],
     *,
     label: str,
 ) -> None:
     last: BaseException | None = None
+    if all(isinstance(record, dict) for record in snapshot.values()):
+        object_snapshot = snapshot  # type: ignore[assignment]
+        for _attempt in range(3):
+            try:
+                verify_file_object_snapshot(
+                    target,
+                    object_snapshot,
+                    label,
+                    owner_only_for=software_owner_only,
+                    max_bytes_for=software_max_bytes,
+                )
+                cleanup_transaction_residue(target)
+                return
+            except BaseException as exc:
+                last = exc
+                cleanup_transaction_residue(target)
+        if last is not None:
+            raise last
+        return
+    desired = snapshot  # type: ignore[assignment]
     for attempt in range(3):
         try:
-            apply_software_state(target, snapshot, rollback_on_error=False, label=f"{label} attempt {attempt + 1}", rollback_order=True)
-            verify_software_state(target, snapshot, label)
+            apply_software_state(target, desired, rollback_on_error=False, label=f"{label} attempt {attempt + 1}", rollback_order=True)
+            verify_software_state(target, desired, label)
             cleanup_transaction_residue(target)
             return
         except BaseException as exc:
@@ -2773,15 +3158,14 @@ def restore_software_snapshot_with_retries(
         raise last
 
 
-def restore_software_snapshot(target: Path, snapshot: dict[Path, tuple[bytes | None, int | None]]) -> None:
+def restore_software_snapshot(target: Path, snapshot: FileObjectSnapshot | dict[Path, tuple[bytes | None, int | None]]) -> None:
     restore_software_snapshot_with_retries(target, snapshot, label="software rollback")
 
 
 def remove_empty_directory_if_created(path: Path, existed_before: bool) -> None:
     if existed_before:
         return
-    with contextlib.suppress(FileNotFoundError, OSError):
-        rmdir_if_empty_durable(path)
+    cleanup_path_with_retries(path, raise_on_failure=True)
 
 
 def validate_safe_software_presence(target: Path) -> None:
@@ -2827,7 +3211,9 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
         before_software_dir = path_present(software_manifest_path(canonical_target).parent)
         before_versions_dir = path_present(software_tree_binary(canonical_target).parent.parent)
         before_version_dir = path_present(software_tree_binary(canonical_target).parent)
-        before_software = current_software_snapshot(canonical_target)
+        before_software = current_software_object_snapshot(canonical_target)
+        before_software_payload = software_payload_snapshot(before_software)
+        software_undo: FileUndoTransaction | None = None
         try:
             asset_key, asset = selected_asset()
             url = asset.get("url")
@@ -2880,19 +3266,24 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
                 Path("bin") / COMMAND_NAME: (artifact["binary"], OWNER_EXECUTABLE_MODE),
                 SOFTWARE_MANIFEST_RELATIVE: (canonical_json(manifest), OWNER_FILE_MODE),
             }
-            apply_software_state(
+            software_undo = apply_software_state(
                 canonical_target,
                 desired_software,
-                expected_before=before_software,
+                expected_before=before_software_payload,
                 rollback_on_error=True,
                 label="software install",
+                cleanup_on_success=False,
             )
             final = software_status(canonical_target)
             if not final["installed"] or not final["current"]:
                 fail("MiMo Code software install did not produce current target-owned software")
             verify_software_state(canonical_target, desired_software, "software install postcondition")
+            software_undo.commit_cleanup()
         except BaseException:
-            restore_software_snapshot(canonical_target, before_software)
+            if software_undo is not None:
+                software_undo.rollback()
+            else:
+                restore_software_snapshot(canonical_target, before_software)
             remove_empty_directory_if_created(software_tree_binary(canonical_target).parent, before_version_dir)
             remove_empty_directory_if_created(software_tree_binary(canonical_target).parent.parent, before_versions_dir)
             remove_empty_directory_if_created(software_manifest_path(canonical_target).parent, before_software_dir)
@@ -2916,30 +3307,37 @@ def remove_cli(target: Path) -> dict[str, Any]:
         if not status["present"]:
             fail("remove-cli requires existing target-owned MiMo Code software presence")
         validate_safe_software_presence(canonical_target)
-        before_software = current_software_snapshot(canonical_target)
+        before_software = current_software_object_snapshot(canonical_target)
+        before_software_payload = software_payload_snapshot(before_software)
         desired = {relative: (None, None) for relative in software_file_modes()}
+        software_undo: FileUndoTransaction | None = None
         try:
-            apply_software_state(
+            software_undo = apply_software_state(
                 canonical_target,
                 desired,
-                expected_before=before_software,
+                expected_before=before_software_payload,
                 rollback_on_error=True,
                 label="software remove",
+                cleanup_on_success=False,
             )
             final = software_status(canonical_target)
             if final["present"]:
                 fail("MiMo Code software remove left target-owned files")
+            for directory in (
+                software_tree_binary(canonical_target).parent,
+                software_tree_binary(canonical_target).parent.parent,
+                software_manifest_path(canonical_target).parent,
+                mimo_executable(canonical_target).parent,
+            ):
+                with contextlib.suppress(FileNotFoundError):
+                    rmdir_if_empty_durable(directory)
+            software_undo.commit_cleanup()
         except BaseException:
-            restore_software_snapshot(canonical_target, before_software)
+            if software_undo is not None:
+                software_undo.rollback()
+            else:
+                restore_software_snapshot(canonical_target, before_software)
             raise
-        for directory in (
-            software_tree_binary(canonical_target).parent,
-            software_tree_binary(canonical_target).parent.parent,
-            software_manifest_path(canonical_target).parent,
-            mimo_executable(canonical_target).parent,
-        ):
-            with contextlib.suppress(FileNotFoundError, OSError):
-                rmdir_if_empty_durable(directory)
     return {"ok": True, "operation": "remove-cli", "target": str(canonical_target), "removed": True}
 
 
@@ -3122,8 +3520,8 @@ def add_setup_profile_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = JsonBoundaryArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=JsonBoundaryArgumentParser)
     list_parser = subparsers.add_parser("list", help="list setup and profile variants")
     add_json_argument(list_parser)
     for name in ("status", "software-status"):
@@ -3174,6 +3572,8 @@ def run(args: argparse.Namespace) -> int:
             fail(f"{name} is managed by nddev-mimocode-app and must not be supplied by the caller")
         if name.startswith(FORBIDDEN_MANAGER_ENV_PREFIXES):
             fail(f"{name} is not a supported public override")
+    if args.command in TARGET_BOUND_COMMANDS:
+        require_supported_product_host()
     if args.command == "list":
         print_payload({"ok": True, "setups": list_setups(), "profiles": list_profiles(), "default_profile": DEFAULT_PROFILE_ID}, json_output=args.json)
         return 0
@@ -3232,13 +3632,18 @@ def run(args: argparse.Namespace) -> int:
     fail(f"unknown command: {args.command}")
 
 
+def json_requested(argv: list[str] | None) -> bool:
+    return "--json" in (argv if argv is not None else sys.argv[1:])
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
         return run(args)
+    except CliArgumentError as exc:
+        return error_result(str(exc), json_output=json_requested(argv))
     except MiMoCodeSetupError as exc:
-        json_output = "--json" in (argv if argv is not None else sys.argv[1:])
-        return error_result(str(exc), json_output=json_output)
+        return error_result(str(exc), json_output=json_requested(argv))
 
 
 if __name__ == "__main__":

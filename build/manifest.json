@@ -89,6 +89,7 @@
         "baseline": "linux-x64-baseline"
       }
     },
-    "platform_selection_source": "cli-tools/nddev_mimocode.py:detect_platform_selection"
+    "platform_selection_source": "cli-tools/nddev_mimocode.py:detect_platform_selection",
+    "target_preflight_order_source": "cli-tools/nddev_mimocode.py:run"
   }
 }
