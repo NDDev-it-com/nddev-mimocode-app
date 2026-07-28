@@ -446,6 +446,8 @@ def validate_versions(errors: list[str]) -> None:
         require("final-path publication commit point" in transaction.get("published_anchor_rollback_exception", ""), "published anchor commit point missing", errors)
         require("monotonic rendezvous" in transaction.get("published_anchor_rollback_exception", ""), "published anchor rollback exception missing", errors)
         require("same-dev-inode" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias recovery contract missing", errors)
+        require("mutating openers" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias mutator-only recovery contract missing", errors)
+        require("read-only shared openers fail closed without recovery" in transaction.get("hardlink_publication_alias_recovery", ""), "read-only alias fail-closed contract missing", errors)
         require("unknown or multiple hardlinks fail closed" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias fail-closed contract missing", errors)
         require("absent targets do not create target-specific" in str(transaction.get("external_lock_persistent", "")), "command-accurate external lock persistence contract missing", errors)
         require("read-only inspection commands do not create" in str(transaction.get("internal_lock_persistent", "")), "read-only internal lock contract missing", errors)

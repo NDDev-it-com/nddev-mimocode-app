@@ -1586,16 +1586,15 @@ def open_bootstrap_anchor_lock_file(path: Path, label: str) -> int:
 
 
 def acquire_bootstrap_anchor_lock(descriptor: int, path: Path, label: str, *, shared: bool = False) -> None:
-    opened = os.fstat(descriptor)
-    locked_shared = shared and opened.st_nlink == 1
-    acquire_file_lock(descriptor, path, shared=locked_shared)
-    current = require_bootstrap_anchor_path(path, label, allow_publication_alias=True)
-    if shared and locked_shared and current.st_nlink != 1:
-        acquire_file_lock(descriptor, path)
-        locked_shared = False
-    recover_bootstrap_anchor_publication_alias(descriptor, path, label)
-    if shared and not locked_shared:
+    if shared:
         acquire_file_lock(descriptor, path, shared=True)
+        current = require_bootstrap_anchor_path(path, label, allow_publication_alias=False)
+        opened = os.fstat(descriptor)
+        if identity_of(current) != identity_of(opened):
+            fail_concurrent(f"{label} changed while locked")
+        return
+    acquire_file_lock(descriptor, path)
+    recover_bootstrap_anchor_publication_alias(descriptor, path, label)
 
 
 def publish_bootstrap_anchor_no_replace(
@@ -1675,9 +1674,14 @@ def ensure_bootstrap_global_lock_anchor(pool: Path) -> Path:
     if not path_present(path):
         publish_bootstrap_global_lock_anchor(path)
     descriptor = open_bootstrap_anchor_lock_file(path, "bootstrap product lock file")
+    acquired = False
     try:
+        acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap product lock file")
+        acquired = True
         validate_bootstrap_global_lock_binding(descriptor, path)
     finally:
+        if acquired:
+            release_file_lock(descriptor)
         os.close(descriptor)
     return path
 

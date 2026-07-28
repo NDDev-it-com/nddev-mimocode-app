@@ -23,8 +23,9 @@ case where no product anchor exists yet. Mutating commands publish a complete
 `global.lock` product anchor and canonical-target external marker with
 atomic no-replace binding. Their final-path publication is the rollback
 commit point, so published anchors are monotonic rendezvous files; a later
-opener recovers only a bounded same-inode publication alias after locking the
-final anchor.
+mutating opener recovers only a bounded same-inode publication alias after
+locking the final anchor. Read-only commands fail closed if they observe an
+incomplete hard-link publication state and leave the namespace unchanged.
 Read-only `status`, `plan`, and `software-status` do not create anchors: a
 cold read uses a no-create path and retries if a concurrent mutation publishes
 `global.lock`, while a seeded read opens existing anchors no-follow/no-create.

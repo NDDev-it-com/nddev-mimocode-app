@@ -160,7 +160,7 @@
     },
     "read_only_cold_exception": "cold no-anchor read is the only target-observation exception before external coordination; it double-checks product anchor absence and retries under the anchor if a concurrent mutation publishes one",
     "published_anchor_rollback_exception": "complete validated product and canonical target anchors are monotonic rendezvous objects after the final-path publication commit point and are never unlinked by ordinary lifecycle cleanup or rollback",
-    "hardlink_publication_alias_recovery": "future openers lock the final anchor before parent mutation, remove exactly one bounded same-dev-inode machine-named publication alias, fsync the parent, and revalidate final path binding with nlink=1; unknown or multiple hardlinks fail closed",
+    "hardlink_publication_alias_recovery": "mutating openers lock the final anchor before parent mutation, remove exactly one bounded same-dev-inode machine-named publication alias, fsync the parent, and revalidate final path binding with nlink=1; read-only shared openers fail closed without recovery when nlink is not 1 or a publication alias is present; unknown or multiple hardlinks fail closed",
     "internal_lock_persistent": "mutating commands only; read-only inspection commands do not create target-internal lock graph",
     "lock_order": [
       "product-wide-external-coordination",
