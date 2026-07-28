@@ -744,7 +744,7 @@ class DirectoryUndoTransaction:
     def __init__(self, target: Path, *, label: str) -> None:
         self.target = target
         self.label = label
-        self.undo_root = target / f".nddev-mimocode.dir-rollback.{os.getpid()}.{time.time_ns()}"
+        self.undo_root = target / f".nddev-mimocode.rollback.dirs.{os.getpid()}.{time.time_ns()}"
         self.records: dict[Path, Path] = {}
 
     def _undo_path(self, relative: Path) -> Path:
