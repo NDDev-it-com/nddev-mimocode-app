@@ -229,7 +229,7 @@ PROJECT_BOUNDARY_PATHS = (
     Path(".codex") / "skills",
     Path(".opencode") / "skills",
 )
-OBSERVED_OFFICIAL_ASSET_IDS = (
+OBSERVED_UPLOADED_RUNTIME_ASSET_IDS = (
     "darwin-arm64",
     "darwin-x64-baseline",
     "darwin-x64",
@@ -242,6 +242,17 @@ OBSERVED_OFFICIAL_ASSET_IDS = (
     "windows-arm64",
     "windows-x64-baseline",
     "windows-x64",
+)
+RELEASE_PAGE_ASSET_COUNT = 14
+GENERATED_SOURCE_DOWNLOADS = (
+    {
+        "name": "Source code (zip)",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.zip",
+    },
+    {
+        "name": "Source code (tar.gz)",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.tar.gz",
+    },
 )
 SUPPORTED_PRODUCT_HOST_IDS = (
     "macos-arm64",
@@ -474,6 +485,7 @@ def is_transaction_residue_path(path: Path) -> bool:
 FileObjectRecord = dict[str, Any]
 FileObjectSnapshot = dict[Path, FileObjectRecord]
 DirectoryObjectSnapshot = dict[Path, dict[str, Any]]
+DirectoryMetadataRecord = dict[str, int]
 
 
 def absent_file_object() -> FileObjectRecord:
@@ -534,6 +546,44 @@ def verify_file_object_snapshot(
             fail_concurrent(f"{label} did not restore exact file object: {relative}")
 
 
+def directory_metadata_record(path: Path, label: str) -> DirectoryMetadataRecord:
+    info = require_directory(path, label)
+    return {
+        "mode": stat.S_IMODE(info.st_mode),
+        "dev": info.st_dev,
+        "ino": info.st_ino,
+        "mtime_ns": info.st_mtime_ns,
+    }
+
+
+def restore_directory_metadata_record(path: Path, record: DirectoryMetadataRecord, label: str) -> None:
+    last: BaseException | None = None
+    for _attempt in range(3):
+        try:
+            info = require_directory(path, label)
+            if info.st_dev != record["dev"] or info.st_ino != record["ino"]:
+                fail_concurrent(f"{label} directory identity changed")
+            if stat.S_IMODE(info.st_mode) != record["mode"]:
+                path.chmod(record["mode"])
+            current = path.lstat()
+            if current.st_mtime_ns != record["mtime_ns"]:
+                os.utime(path, ns=(current.st_atime_ns, record["mtime_ns"]))
+            fsync_directory_with_retries(path, f"{label} directory fsync")
+            verified = require_directory(path, label)
+            if (
+                verified.st_dev == record["dev"]
+                and verified.st_ino == record["ino"]
+                and stat.S_IMODE(verified.st_mode) == record["mode"]
+                and verified.st_mtime_ns == record["mtime_ns"]
+            ):
+                return
+            fail_concurrent(f"{label} directory metadata did not restore")
+        except BaseException as exc:
+            last = exc
+    if last is not None:
+        raise last
+
+
 def directory_object_snapshot(target: Path) -> DirectoryObjectSnapshot:
     if not path_present(target):
         return {}
@@ -545,32 +595,38 @@ def directory_object_snapshot(target: Path) -> DirectoryObjectSnapshot:
         if item.is_dir() and not item.is_symlink() and not is_transaction_residue_path(item.relative_to(target))
     ]
     for path in [target, *sorted(directories, key=lambda entry: str(entry.relative_to(target)))]:
-        info = path.lstat()
         relative = Path(".") if path == target else path.relative_to(target)
-        result[relative] = {
-            "mode": stat.S_IMODE(info.st_mode),
-            "dev": info.st_dev,
-            "ino": info.st_ino,
-            "mtime_ns": info.st_mtime_ns,
-        }
+        result[relative] = directory_metadata_record(path, f"directory snapshot {relative}")
     return result
 
 
 def restore_directory_object_snapshot(target: Path, snapshot: DirectoryObjectSnapshot, label: str) -> None:
     for relative, record in sorted(snapshot.items(), key=lambda item: len(item[0].parts), reverse=True):
         path = target if relative == Path(".") else target / relative
-        info = require_directory(path, f"{label} directory {relative}")
-        if info.st_dev != record["dev"] or info.st_ino != record["ino"]:
-            fail_concurrent(f"{label} directory identity changed: {relative}")
-        mode = stat.S_IMODE(info.st_mode)
-        if mode != record["mode"]:
-            path.chmod(record["mode"])
-        current = path.lstat()
-        if current.st_mtime_ns != record["mtime_ns"]:
-            os.utime(path, ns=(current.st_atime_ns, record["mtime_ns"]))
-        fsync_directory_with_retries(path, f"{label} directory fsync {relative}")
+        restore_directory_metadata_record(path, record, f"{label} directory {relative}")
     if path_present(target):
         fsync_directory_with_retries(target, f"{label} target directory after metadata restore")
+
+
+def rollback_created_target_if_absent(
+    canonical_target: Path,
+    existed_before: bool,
+    parent_record: DirectoryMetadataRecord,
+    label: str,
+) -> None:
+    if existed_before:
+        return
+    with contextlib.suppress(FileNotFoundError, OSError):
+        lock_directory = lock_directory_path(canonical_target)
+        info = lock_directory.lstat()
+        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            lock_directory.chmod(OWNER_DIRECTORY_MODE)
+    cleanup_path_with_retries(canonical_target, raise_on_failure=True)
+    if path_present(canonical_target):
+        fail_concurrent(f"{label} did not remove newly created target")
+    restore_directory_metadata_record(canonical_target.parent, parent_record, f"{label} target parent")
+    if path_present(canonical_target):
+        fail_concurrent(f"{label} recreated target while restoring parent metadata")
 
 
 class FileUndoTransaction:
@@ -1468,12 +1524,24 @@ def target_lock(target: Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def locked_new_or_existing_target(target: Path) -> Iterator[Path]:
+    with locked_new_or_existing_target_state(target) as (canonical_target, _existed_before, _parent_record):
+        yield canonical_target
+
+
+@contextlib.contextmanager
+def locked_new_or_existing_target_state(target: Path) -> Iterator[tuple[Path, bool, DirectoryMetadataRecord]]:
     with bootstrap_lifecycle_lock(target) as locked_target:
-        canonical_target = ensure_target_directory(locked_target)
+        existed_before = path_present(locked_target)
+        parent_record = directory_metadata_record(locked_target.parent, "target parent")
+        try:
+            canonical_target = ensure_target_directory(locked_target)
+        except BaseException:
+            rollback_created_target_if_absent(locked_target, existed_before, parent_record, "target creation rollback")
+            raise
         if canonical_target != locked_target:
             fail_concurrent("target canonical path changed during lifecycle lock acquisition")
         with target_lock(canonical_target):
-            yield canonical_target
+            yield canonical_target, existed_before, parent_record
 
 
 @contextlib.contextmanager
@@ -2230,24 +2298,24 @@ def restore_desired_from_backup(files: dict[Path, bytes]) -> dict[Path, bytes | 
 
 
 def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -> dict[str, Any]:
-    with locked_new_or_existing_target(target) as canonical_target:
-        state = inspect_target(canonical_target)
-        if state["state"] == "legacy-managed":
-            fail("legacy managed target must be migrated before install, update, or switch")
-        existing_config = read_existing_config_if_managed(canonical_target, state)
-        metadata, desired = render_setup(setup_id, profile_id, existing_config=existing_config)
-        stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
-        desired[Path(STAMP_NAME)] = canonical_json(stamp)
-        changed = changed_paths(canonical_target, desired)
-        backup_slot: int | None = None
-        lifecycle_directories = directory_object_snapshot(canonical_target)
-        snapshot = current_managed_object_snapshot(canonical_target)
-        snapshot_payload = managed_payload_snapshot(snapshot)
+    with locked_new_or_existing_target_state(target) as (canonical_target, target_existed_before, target_parent_record):
         managed_undo: FileUndoTransaction | None = None
         backup_before: dict[str, tuple[str, int, str | None]] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
         try:
+            state = inspect_target(canonical_target)
+            if state["state"] == "legacy-managed":
+                fail("legacy managed target must be migrated before install, update, or switch")
+            existing_config = read_existing_config_if_managed(canonical_target, state)
+            metadata, desired = render_setup(setup_id, profile_id, existing_config=existing_config)
+            stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
+            desired[Path(STAMP_NAME)] = canonical_json(stamp)
+            changed = changed_paths(canonical_target, desired)
+            backup_slot: int | None = None
+            lifecycle_directories = directory_object_snapshot(canonical_target)
+            snapshot = current_managed_object_snapshot(canonical_target)
+            snapshot_payload = managed_payload_snapshot(snapshot)
             if state["state"] == "managed" and changed:
                 backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
             if changed:
@@ -2270,10 +2338,19 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
             if managed_undo is not None:
                 managed_undo.rollback()
             else:
-                restore_snapshot(canonical_target, snapshot)
+                if "snapshot" in locals():
+                    restore_snapshot(canonical_target, snapshot)
             if backup_before is not None:
                 rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
-            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+            if target_existed_before and "lifecycle_directories" in locals():
+                restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+            else:
+                rollback_created_target_if_absent(
+                    canonical_target,
+                    target_existed_before,
+                    target_parent_record,
+                    "lifecycle rollback",
+                )
             raise
     return {
         "ok": True,
@@ -3225,8 +3302,10 @@ def restore_software_snapshot(target: Path, snapshot: FileObjectSnapshot | dict[
     restore_software_snapshot_with_retries(target, snapshot, label="software rollback")
 
 
-def remove_empty_directory_if_created(path: Path, existed_before: bool) -> None:
+def remove_empty_directory_if_created(path: Path, existed_before: bool | None) -> None:
     if existed_before:
+        return
+    if existed_before is None:
         return
     cleanup_path_with_retries(path, raise_on_failure=True)
 
@@ -3253,31 +3332,35 @@ def validate_safe_software_presence(target: Path) -> None:
 
 def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
     require_supported_product_host()
-    before_target_exists = path_present(target)
-    with locked_new_or_existing_target(target) as canonical_target:
-        status = software_status(canonical_target)
-        if operation == "install-cli" and status["present"]:
-            fail("install-cli requires absent target-owned MiMo Code software presence; use update-cli")
-        if operation == "update-cli" and not status["present"]:
-            fail("update-cli requires existing target-owned MiMo Code software presence")
-        if operation == "update-cli" and status["current"]:
-            return {
-                "ok": True,
-                "operation": "current",
-                "target": str(canonical_target),
-                "version": TESTED_VERSION,
-                "changed": [],
-                "executable": str(mimo_executable(canonical_target)),
-            }
-        validate_safe_software_presence(canonical_target)
-        before_bin_dir = path_present(mimo_executable(canonical_target).parent)
-        before_software_dir = path_present(software_manifest_path(canonical_target).parent)
-        before_versions_dir = path_present(software_tree_binary(canonical_target).parent.parent)
-        before_version_dir = path_present(software_tree_binary(canonical_target).parent)
-        before_software = current_software_object_snapshot(canonical_target)
-        before_software_payload = software_payload_snapshot(before_software)
+    with locked_new_or_existing_target_state(target) as (canonical_target, target_existed_before, target_parent_record):
         software_undo: FileUndoTransaction | None = None
+        before_software: FileObjectSnapshot | None = None
+        before_bin_dir: bool | None = None
+        before_software_dir: bool | None = None
+        before_versions_dir: bool | None = None
+        before_version_dir: bool | None = None
         try:
+            status = software_status(canonical_target)
+            if operation == "install-cli" and status["present"]:
+                fail("install-cli requires absent target-owned MiMo Code software presence; use update-cli")
+            if operation == "update-cli" and not status["present"]:
+                fail("update-cli requires existing target-owned MiMo Code software presence")
+            if operation == "update-cli" and status["current"]:
+                return {
+                    "ok": True,
+                    "operation": "current",
+                    "target": str(canonical_target),
+                    "version": TESTED_VERSION,
+                    "changed": [],
+                    "executable": str(mimo_executable(canonical_target)),
+                }
+            validate_safe_software_presence(canonical_target)
+            before_bin_dir = path_present(mimo_executable(canonical_target).parent)
+            before_software_dir = path_present(software_manifest_path(canonical_target).parent)
+            before_versions_dir = path_present(software_tree_binary(canonical_target).parent.parent)
+            before_version_dir = path_present(software_tree_binary(canonical_target).parent)
+            before_software = current_software_object_snapshot(canonical_target)
+            before_software_payload = software_payload_snapshot(before_software)
             asset_key, asset = selected_asset()
             url = asset.get("url")
             expected_sha = asset.get("sha256")
@@ -3345,13 +3428,18 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
         except BaseException:
             if software_undo is not None:
                 software_undo.rollback()
-            else:
+            elif before_software is not None:
                 restore_software_snapshot(canonical_target, before_software)
             remove_empty_directory_if_created(software_tree_binary(canonical_target).parent, before_version_dir)
             remove_empty_directory_if_created(software_tree_binary(canonical_target).parent.parent, before_versions_dir)
             remove_empty_directory_if_created(software_manifest_path(canonical_target).parent, before_software_dir)
             remove_empty_directory_if_created(mimo_executable(canonical_target).parent, before_bin_dir)
-            remove_empty_directory_if_created(canonical_target, before_target_exists)
+            rollback_created_target_if_absent(
+                canonical_target,
+                target_existed_before,
+                target_parent_record,
+                "software lifecycle rollback",
+            )
             raise
     return {
         "ok": True,

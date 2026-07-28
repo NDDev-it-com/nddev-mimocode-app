@@ -100,7 +100,7 @@ PRIVATE_TEXT_MARKERS = (
     "validation/" + "nddev-mimocode-app",
     ".ser" + "ena",
 )
-OBSERVED_OFFICIAL_ASSET_IDS = [
+OBSERVED_UPLOADED_RUNTIME_ASSET_IDS = [
     "darwin-arm64",
     "darwin-x64-baseline",
     "darwin-x64",
@@ -113,6 +113,17 @@ OBSERVED_OFFICIAL_ASSET_IDS = [
     "windows-arm64",
     "windows-x64-baseline",
     "windows-x64",
+]
+RELEASE_PAGE_ASSET_COUNT = 14
+GENERATED_SOURCE_DOWNLOADS = [
+    {
+        "name": "Source code (zip)",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.zip",
+    },
+    {
+        "name": "Source code (tar.gz)",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.tar.gz",
+    },
 ]
 SUPPORTED_PRODUCT_HOST_IDS = [
     "macos-arm64",
@@ -335,6 +346,7 @@ def validate_versions(errors: list[str]) -> None:
     require(manifest.get("build_version") == version, "manifest version mismatch", errors)
     require(contract.get("builder_capability", {}).get("version") == version, "builder version mismatch", errors)
     require(build.get("nddev_builder_extension_version") == version, "builder extension version mismatch", errors)
+    require(build.get("python_requires") == ">=3.9", "build python_requires mismatch", errors)
     require(build.get("mimocode_tested") == nddev_mimocode.TESTED_VERSION, "tested version mismatch", errors)
     require(build.get("command") == nddev_mimocode.COMMAND_NAME, "command mismatch", errors)
     require(build.get("official_installer") == nddev_mimocode.INSTALLER_URL, "installer URL mismatch", errors)
@@ -343,7 +355,9 @@ def validate_versions(errors: list[str]) -> None:
     runtime = manifest.get("runtime_compatibility")
     require(isinstance(runtime, dict), "manifest runtime_compatibility missing", errors)
     if isinstance(runtime, dict):
-        require(runtime.get("observed_official_asset_ids") == OBSERVED_OFFICIAL_ASSET_IDS, "manifest observed asset ids mismatch", errors)
+        require(runtime.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT, "manifest release page asset count mismatch", errors)
+        require(runtime.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS, "manifest generated source downloads mismatch", errors)
+        require(runtime.get("observed_uploaded_runtime_asset_ids") == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "manifest observed runtime asset ids mismatch", errors)
         require(runtime.get("supported_product_host_ids") == SUPPORTED_PRODUCT_HOST_IDS, "manifest product host ids mismatch", errors)
         require(runtime.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS, "manifest rejected host ids mismatch", errors)
         require(runtime.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION, "manifest product host asset selection mismatch", errors)
@@ -359,8 +373,10 @@ def validate_versions(errors: list[str]) -> None:
         require(release.get("version") == build.get("mimocode_tested"), "baseline release mismatch", errors)
         require(release.get("tag") == build.get("mimocode_release_tag"), "baseline tag mismatch", errors)
         require(release.get("published_at") == build.get("mimocode_published_at"), "baseline published_at mismatch", errors)
-        require(release.get("observed_asset_ids") == OBSERVED_OFFICIAL_ASSET_IDS, "baseline observed asset ids mismatch", errors)
-        require(set(release.get("assets", {})) == set(OBSERVED_OFFICIAL_ASSET_IDS), "observed asset key mismatch", errors)
+        require(release.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT, "baseline release page asset count mismatch", errors)
+        require(release.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS, "baseline generated source downloads mismatch", errors)
+        require(release.get("observed_uploaded_runtime_asset_ids") == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "baseline observed runtime asset ids mismatch", errors)
+        require(set(release.get("assets", {})) == set(OBSERVED_UPLOADED_RUNTIME_ASSET_IDS), "observed runtime asset key mismatch", errors)
     if isinstance(product_hosts, dict):
         require(product_hosts.get("supported_ids") == SUPPORTED_PRODUCT_HOST_IDS, "baseline product host ids mismatch", errors)
         require(product_hosts.get("rejected_ids") == REJECTED_PRODUCT_HOST_IDS, "baseline rejected host ids mismatch", errors)
@@ -420,7 +436,9 @@ def validate_versions(errors: list[str]) -> None:
     software = contract.get("software_install")
     require(isinstance(software, dict), "contract software_install missing", errors)
     if isinstance(software, dict):
-        require(software.get("observed_official_asset_ids") == OBSERVED_OFFICIAL_ASSET_IDS, "contract observed asset ids mismatch", errors)
+        require(software.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT, "contract release page asset count mismatch", errors)
+        require(software.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS, "contract generated source downloads mismatch", errors)
+        require(software.get("observed_uploaded_runtime_asset_ids") == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "contract observed runtime asset ids mismatch", errors)
         require(software.get("supported_product_host_ids") == SUPPORTED_PRODUCT_HOST_IDS, "contract product host ids mismatch", errors)
         require(software.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS, "contract rejected host ids mismatch", errors)
         require(software.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION, "contract product host asset selection mismatch", errors)
@@ -431,7 +449,9 @@ def validate_versions(errors: list[str]) -> None:
         require("MIMOCODE_ENABLE_ANALYSIS=0" in software.get("staged_probe_telemetry", ""), "staged probe telemetry contract missing", errors)
     require(nddev_mimocode.MIMOCODE_FIXED_RUNTIME_ENV == EXPECTED_FIXED_RUNTIME_ENV, "manager fixed runtime env mismatch", errors)
     require([str(path) for path in nddev_mimocode.PROJECT_BOUNDARY_PATHS] == EXPECTED_PROJECT_BOUNDARY_PATHS, "manager project boundary paths mismatch", errors)
-    require(list(nddev_mimocode.OBSERVED_OFFICIAL_ASSET_IDS) == OBSERVED_OFFICIAL_ASSET_IDS, "manager observed asset ids mismatch", errors)
+    require(list(nddev_mimocode.OBSERVED_UPLOADED_RUNTIME_ASSET_IDS) == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "manager observed runtime asset ids mismatch", errors)
+    require(nddev_mimocode.RELEASE_PAGE_ASSET_COUNT == RELEASE_PAGE_ASSET_COUNT, "manager release page asset count mismatch", errors)
+    require(list(nddev_mimocode.GENERATED_SOURCE_DOWNLOADS) == GENERATED_SOURCE_DOWNLOADS, "manager generated source downloads mismatch", errors)
     require(list(nddev_mimocode.SUPPORTED_PRODUCT_HOST_IDS) == SUPPORTED_PRODUCT_HOST_IDS, "manager product host ids mismatch", errors)
     require(list(nddev_mimocode.REJECTED_PRODUCT_HOST_IDS) == REJECTED_PRODUCT_HOST_IDS, "manager rejected host ids mismatch", errors)
     for name in EXPECTED_FIXED_RUNTIME_ENV:
@@ -456,7 +476,7 @@ def validate_assets(errors: list[str]) -> None:
     if not isinstance(assets, dict):
         return
     prefix = f"https://github.com/XiaomiMiMo/MiMo-Code/releases/download/{build['mimocode_release_tag']}/"
-    for key in OBSERVED_OFFICIAL_ASSET_IDS:
+    for key in OBSERVED_UPLOADED_RUNTIME_ASSET_IDS:
         asset = assets.get(key)
         require(isinstance(asset, dict), f"asset missing: {key}", errors)
         if not isinstance(asset, dict):
@@ -644,6 +664,8 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
     original_inspect = nddev_mimocode.inspect_target
     original_host = nddev_mimocode.require_supported_product_host
     original_target = nddev_mimocode.require_absolute_target_argument
+    original_path_present = nddev_mimocode.path_present
+    original_selected_asset = nddev_mimocode.selected_asset
 
     def traced_host(_host: Any = None) -> None:
         trace.append("host")
@@ -653,7 +675,10 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         return original_target(raw_target)
 
     def traced_acquire(descriptor: int, path: Path) -> None:
-        trace.append("external-lock-acquire")
+        if path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
+            trace.append("external-lock-acquire")
+        else:
+            trace.append("target-lock-acquire")
         return original_acquire(descriptor, path)
 
     def traced_canonical(target: Path) -> Path:
@@ -664,27 +689,70 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         trace.append("status-read")
         return original_inspect(target)
 
+    traced_target_path = {"value": ""}
+
+    def traced_path_present(path: Path) -> bool:
+        if str(path) == traced_target_path["value"]:
+            trace.append("target-path-present")
+        return original_path_present(path)
+
+    def stop_before_network() -> tuple[str, dict[str, Any]]:
+        trace.append("selected-asset")
+        raise nddev_mimocode.MiMoCodeSetupError("forced stop before network")
+
     nddev_mimocode.require_supported_product_host = traced_host
     nddev_mimocode.require_absolute_target_argument = traced_target
     nddev_mimocode.acquire_file_lock = traced_acquire
     nddev_mimocode.canonical_target_for_bootstrap_lock = traced_canonical
     nddev_mimocode.inspect_target = traced_inspect
+    nddev_mimocode.path_present = traced_path_present
+    nddev_mimocode.selected_asset = stop_before_network
     try:
         with isolated_bootstrap_root(errors):
             with tempfile.TemporaryDirectory(prefix="nddev-mimocode-preflight.") as raw:
                 target = Path(raw) / "target"
                 target.mkdir(mode=0o700)
                 target.chmod(0o700)
+                traced_target_path["value"] = str(target.parent.resolve() / target.name)
                 rc, stdout, stderr = run_main_captured(["status", "--target", str(target), "--json"])
                 require(rc == 0, "status preflight trace command failed", errors)
                 require(stderr == "", "status preflight trace wrote stderr", errors)
                 require(json.loads(stdout).get("state") == "unmanaged", "status preflight trace payload mismatch", errors)
+                status_trace = list(trace)
+                for command in ("install-cli", "update-cli"):
+                    trace.clear()
+                    command_target = Path(raw) / command
+                    traced_target_path["value"] = str(command_target.parent.resolve() / command_target.name)
+                    rc, stdout, stderr = run_main_captured([command, "--target", str(command_target), "--json"])
+                    require(rc == 2, f"{command} preflight trace command should fail before live work", errors)
+                    require(stderr == "", f"{command} preflight trace wrote stderr", errors)
+                    payload = json.loads(stdout)
+                    if command == "install-cli":
+                        require(payload.get("error") == "forced stop before network", "install-cli did not stop at stubbed network boundary", errors)
+                    else:
+                        require("requires existing" in payload.get("error", ""), "update-cli absent target error mismatch", errors)
+                    require(not original_path_present(command_target), f"{command} left a newly created target after failure", errors)
+                    require(trace[:2] == ["host", "lexical-target"], f"{command} preflight order mismatch: {trace}", errors)
+                    require(
+                        "target-path-present" in trace
+                        and trace.index("target-path-present") > trace.index("external-lock-acquire"),
+                        f"{command} observed target before external lock: {trace}",
+                        errors,
+                    )
+                    require(
+                        trace.index("target-path-present") > trace.index("target-fs-canonicalization"),
+                        f"{command} observed target before coordinated canonicalization: {trace}",
+                        errors,
+                    )
+                trace[:] = status_trace
     finally:
         nddev_mimocode.require_supported_product_host = original_host
         nddev_mimocode.require_absolute_target_argument = original_target
         nddev_mimocode.acquire_file_lock = original_acquire
         nddev_mimocode.canonical_target_for_bootstrap_lock = original_canonical
         nddev_mimocode.inspect_target = original_inspect
+        nddev_mimocode.path_present = original_path_present
+        nddev_mimocode.selected_asset = original_selected_asset
     require(
         trace[:4] == ["host", "lexical-target", "external-lock-acquire", "target-fs-canonicalization"],
         f"preflight order mismatch: {trace}",
@@ -1179,6 +1247,31 @@ def validate_transaction_faults(errors: list[str]) -> None:
             require(update_result.get("needs_update") is False, "setup update did not clear needs_update", errors)
             require(nddev_mimocode.backup_pool_snapshot(target) != before_backup, "setup update with changes did not advance backup state", errors)
             require_no_transaction_residue(target, "setup update with changes left residue", errors)
+
+            target = root / "failed-first-install"
+            before_root = tree_snapshot(root)
+            original_verify_managed = nddev_mimocode.verify_managed_state
+            postcondition_failed = {"value": False}
+
+            def fail_first_install_postcondition(target_arg: Path, desired: dict[Path, bytes | None], label: str) -> None:
+                original_verify_managed(target_arg, desired, label)
+                if label == "managed postcondition" and not postcondition_failed["value"]:
+                    postcondition_failed["value"] = True
+                    raise nddev_mimocode.ConcurrentTargetChange("forced first install postcondition failure")
+
+            nddev_mimocode.verify_managed_state = fail_first_install_postcondition
+            try:
+                require_exception(
+                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "install"),
+                    nddev_mimocode.ConcurrentTargetChange,
+                    "first setup install postcondition failure must propagate",
+                    errors,
+                )
+            finally:
+                nddev_mimocode.verify_managed_state = original_verify_managed
+            require(postcondition_failed["value"], "first setup install postcondition fault was not exercised", errors)
+            require(tree_snapshot(root) == before_root, "failed first setup install changed the absent target graph", errors)
+            require(not nddev_mimocode.path_present(target), "failed first setup install left a target directory", errors)
 
             for label, patch_name in (("write", "write"), ("fchmod", "fchmod")):
                 target = make_managed_target(root / label)

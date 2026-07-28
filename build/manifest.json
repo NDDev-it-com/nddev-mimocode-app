@@ -47,7 +47,18 @@
     "official_installer": "https://mimo.xiaomi.com/install",
     "official_installer_size": 15819,
     "command": "mimo",
-    "observed_official_asset_ids": [
+    "github_release_page_asset_count": 14,
+    "generated_source_downloads": [
+      {
+        "name": "Source code (zip)",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.zip"
+      },
+      {
+        "name": "Source code (tar.gz)",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.tar.gz"
+      }
+    ],
+    "observed_uploaded_runtime_asset_ids": [
       "darwin-arm64",
       "darwin-x64-baseline",
       "darwin-x64",
