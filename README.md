@@ -57,12 +57,21 @@ python3 cli-tools/nddev_mimocode.py remove --target /absolute/target --json
 `update` is the setup-content update command. It reconciles an existing
 managed target to the current module build for the target's recorded setup and
 profile, creates a backup only when managed files change, verifies exact
-postconditions, and is a true no-op when the target is already current.
+postconditions, and is a true no-op only when the target is already current
+and no post-commit cleanup is pending.
 Target-owned MiMo Code software updates use `update-cli` instead.
 
 When `--json` is present, invalid commands, missing required arguments, and
 argument type errors return exit code 2 with a JSON error on stdout and an
 empty stderr stream.
+
+If a lifecycle command reaches the desired active state but cannot finish
+irreversible cleanup, it leaves an immutable manager-owned cleanup journal under
+`.nddev-mimocode-cleanup` and returns `cleanup_pending: true`. Read-only
+`status`, `plan`, and `software-status` only validate and report that bounded
+state; they never repair or drain it. The next mutating target-bound command
+drains a valid journal before active changes, and malformed cleanup state fails
+closed with exit code 2.
 
 Target-owned software lifecycle:
 

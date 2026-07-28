@@ -462,15 +462,47 @@ def validate_versions(errors: list[str]) -> None:
         )
         require("inode identity" in transaction.get("rollback_exact_object_graph", ""), "exact object graph contract missing inode identity", errors)
         require("rename-held undo" in transaction.get("rollback_strategy", ""), "rollback strategy contract mismatch", errors)
+        require("final-path no-replace publication" in transaction.get("rollback_strategy", ""), "cleanup journal commit boundary missing", errors)
+        require(
+            ".nddev-mimocode-cleanup/NDDEV-MIMOCODE-CLEANUP.json" in transaction.get("postcommit_cleanup_journal", ""),
+            "postcommit cleanup journal path contract missing",
+            errors,
+        )
+        require(
+            transaction.get("postcommit_cleanup_journal_max_bytes") == nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES,
+            "postcommit cleanup journal byte bound mismatch",
+            errors,
+        )
+        require("no-replace journal" in transaction.get("postcommit_cleanup_journal", ""), "postcommit cleanup no-replace contract missing", errors)
+        require("bounded relative tombstones" in transaction.get("postcommit_cleanup_journal", ""), "postcommit cleanup tombstone bounds missing", errors)
+        require("read-only commands validate and report only" in transaction.get("postcommit_cleanup_journal", ""), "read-only cleanup contract missing", errors)
+        require(
+            transaction.get("postcommit_cleanup_publish_order")
+            == [
+                "verified desired active state",
+                "rename preserve roots to final tombstones",
+                "validate tombstone identities",
+                "complete journal file-fsync",
+                "atomic no-replace final-path publication",
+                "cleanup parent-fsync",
+            ],
+            "postcommit cleanup publish order mismatch",
+            errors,
+        )
+        require("top-level cleanup_pending true" in transaction.get("cleanup_pending_result", ""), "cleanup_pending result contract missing", errors)
+        require("bounded non-path cleanup_pending_entries" in transaction.get("cleanup_pending_result", ""), "cleanup_pending metadata bound missing", errors)
+        require("exits rc 2 without mutation" in transaction.get("cleanup_pending_result", ""), "malformed cleanup fail-closed contract missing", errors)
         require(transaction.get("restore_removes_known_managed_paths_absent_from_backup") is True, "restore deletion contract missing", errors)
         require(transaction.get("restore_unknown_backup_paths") == "fail-closed", "restore unknown-path contract mismatch", errors)
         require(transaction.get("backup_file_records") == "path-size-sha256", "backup file record contract mismatch", errors)
         require("empty extra directories" in transaction.get("backup_physical_topology", ""), "backup topology contract missing", errors)
-        require("cleanup failures do not return success" in transaction.get("backup_cleanup_postcondition", ""), "backup cleanup contract missing", errors)
+        require("immutable postcommit cleanup journal" in transaction.get("backup_cleanup_postcondition", ""), "backup cleanup journal contract missing", errors)
+        require("cleanup_pending" in transaction.get("backup_cleanup_postcondition", ""), "backup cleanup pending contract missing", errors)
         require(transaction.get("same_uid_recomputed_payload_digest_tamper_machine_capability") is False, "same-UID tamper capability must be false", errors)
         require(transaction.get("setup_update_command") == "update", "setup update command contract missing", errors)
         require("update-cli" in transaction.get("setup_update_scope", ""), "setup update/software update separation missing", errors)
         require("true no-op" in transaction.get("setup_update_noop", ""), "setup update no-op contract missing", errors)
+        require("no cleanup_pending" in transaction.get("setup_update_noop", ""), "setup update cleanup-pending no-op boundary missing", errors)
         require("only when update changes" in transaction.get("setup_update_backup", ""), "setup update backup contract missing", errors)
         require("exact desired managed bytes" in transaction.get("setup_update_postcondition", ""), "setup update postcondition contract missing", errors)
     software = contract.get("software_install")
@@ -488,6 +520,11 @@ def validate_versions(errors: list[str]) -> None:
         require(software.get("staged_probe_environment_source") == "cli-tools/nddev_mimocode.py:minimal_process_env", "staged probe env source mismatch", errors)
         require("MIMOCODE_ENABLE_ANALYSIS=0" in software.get("staged_probe_telemetry", ""), "staged probe telemetry contract missing", errors)
     require(nddev_mimocode.MIMOCODE_FIXED_RUNTIME_ENV == EXPECTED_FIXED_RUNTIME_ENV, "manager fixed runtime env mismatch", errors)
+    require(nddev_mimocode.POSTCOMMIT_CLEANUP_DIRECTORY_NAME == ".nddev-mimocode-cleanup", "manager cleanup directory constant mismatch", errors)
+    require(nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_NAME == "NDDEV-MIMOCODE-CLEANUP.json", "manager cleanup journal constant mismatch", errors)
+    require(nddev_mimocode.POSTCOMMIT_CLEANUP_MAX_ENTRIES == 8, "manager cleanup entry bound mismatch", errors)
+    require(nddev_mimocode.POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS <= 4096, "manager cleanup tree bound mismatch", errors)
+    require(nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES == 4 * 1024 * 1024, "manager cleanup journal byte bound mismatch", errors)
     require([str(path) for path in nddev_mimocode.PROJECT_BOUNDARY_PATHS] == EXPECTED_PROJECT_BOUNDARY_PATHS, "manager project boundary paths mismatch", errors)
     require(list(nddev_mimocode.OBSERVED_UPLOADED_RUNTIME_ASSET_IDS) == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "manager observed runtime asset ids mismatch", errors)
     require(nddev_mimocode.RELEASE_PAGE_ASSET_COUNT == RELEASE_PAGE_ASSET_COUNT, "manager release page asset count mismatch", errors)
@@ -2071,8 +2108,19 @@ def validate_transaction_faults(errors: list[str]) -> None:
                 nddev_mimocode.rmdir_if_empty_durable = original_rmdir
             require(cleanup_failed["value"], "backup retired cleanup one-shot fault was not exercised", errors)
             require(switched.get("backup_slot") == 0, "backup cleanup retry switch did not create backup", errors)
+            require(switched.get("cleanup_pending") is True, "backup cleanup retry must report cleanup_pending", errors)
             require(nddev_mimocode.backup_pool_snapshot(target) != before_backup, "backup cleanup retry did not advance backup pool", errors)
-            require_no_transaction_residue(target, "backup cleanup retry left residue", errors)
+            pending = nddev_mimocode.inspect_target(target)
+            require(pending.get("cleanup_pending") is True, "backup cleanup retry status did not expose cleanup_pending", errors)
+            require(
+                all("relative_path" not in entry for entry in pending.get("cleanup_pending_entries", [])),
+                "cleanup pending metadata must not expose cleanup paths",
+                errors,
+            )
+            drained = nddev_mimocode.update_setup(target)
+            require(drained.get("cleanup_drained") is True, "backup cleanup retry next mutation did not drain pending cleanup", errors)
+            require(drained.get("cleanup_pending") is False, "backup cleanup retry drain left cleanup pending", errors)
+            require_no_transaction_residue(target, "backup cleanup retry drain left residue", errors)
 
             target = (root / "remove-cli").resolve()
             make_fake_software(target)
@@ -2144,7 +2192,7 @@ def validate_transaction_faults(errors: list[str]) -> None:
             rollback_armed = {"value": False}
 
             nddev_mimocode.require_supported_product_host = lambda _host=None: None
-            def fake_status(_target: Path) -> dict[str, Any]:
+            def fake_status(_target: Path, **_kwargs: Any) -> dict[str, Any]:
                 status_calls["count"] += 1
                 return {"present": True, "installed": True, "current": status_calls["count"] > 1, "drift": []}
 
