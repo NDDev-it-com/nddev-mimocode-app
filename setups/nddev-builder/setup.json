@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "nddev-builder",
+  "description": "NDDev builder content setup for native MiMo Code configuration, instructions, skills, and agents.",
+  "managed_files": [
+    "home/mimocode/config/mimocode.json",
+    "home/mimocode/config/AGENTS.md"
+  ],
+  "builder_projection": "native-config-skills-agents-instructions",
+  "builder_default_on": true
+}

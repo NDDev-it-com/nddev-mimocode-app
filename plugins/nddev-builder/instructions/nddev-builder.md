@@ -2,11 +2,11 @@
 
 Maintain setup-manager artifacts as native MiMo Code configuration:
 
-- `mimocode.json` owns permission, agent, skills, and instruction references.
-- `AGENTS.md` provides global target instructions.
-- `skills/nddev-builder/SKILL.md` provides the native builder skill.
-- `agents/nddev-builder.md` provides the native builder subagent.
-
-Keep marketplace support unset unless official MiMo Code documentation defines
-a marketplace contract. Keep all provider auth and runtime state outside the
-manager's read/write scope.
+- Use the manager status commands for target and software readiness.
+- Use the contract and baseline ledger for source-owned facts.
+- Keep setup content, profile posture, and runtime authentication boundaries
+  separate.
+- Keep marketplace support unset unless official MiMo Code documentation
+  defines a marketplace contract.
+- Keep all provider authentication and runtime state outside public setup
+  content.

@@ -5,10 +5,32 @@
   "license": "AGPL-3.0-or-later",
   "setup_system": {
     "manager": "cli-tools/nddev_mimocode.py",
-    "setup_ids": ["safe", "balanced", "full-auto"],
+    "setup_ids": [
+      "nddev-builder"
+    ],
+    "profile_ids": [
+      "full-auto",
+      "safe"
+    ],
+    "default_setup_id": "nddev-builder",
+    "default_profile_id": "full-auto",
     "explicit_absolute_target_required": true,
     "builder_default_on": true,
-    "lifecycle": ["list", "status", "plan", "install", "switch", "restore", "remove", "software-status", "install-cli", "update-cli", "remove-cli", "launch"]
+    "lifecycle": [
+      "list",
+      "status",
+      "plan",
+      "install",
+      "switch",
+      "migrate",
+      "restore",
+      "remove",
+      "software-status",
+      "install-cli",
+      "update-cli",
+      "remove-cli",
+      "launch"
+    ]
   },
   "runtime_compatibility": {
     "baseline_ref": "references/mimocode-baseline.json",
@@ -30,62 +52,86 @@
     ]
   },
   "builder_capability": {
-    "projection": "mimocode-native-config-skills-agents-instructions-workflows",
+    "projection": "mimocode-native-config-skills-agents-instructions",
     "source_root": "plugins/nddev-builder",
-    "version": "0.1.0",
-    "native_paths": [
-      "config/mimocode.json",
-      "config/AGENTS.md",
-      "config/skills/nddev-builder/SKILL.md",
-      "config/agents/nddev-builder.md",
-      "config/instructions/nddev-builder.md",
-      ".mimocode/workflows/nddev-builder.js"
-    ],
+    "version": "0.2.0",
+    "native_paths_source": "cli-tools/nddev_mimocode.py:BUILDER_SOURCE_FILES",
     "default_on": true,
     "marketplace": null,
-    "marketplace_reason": "No official MiMo Code marketplace contract was found; the module uses documented native config, skills, agents, and instruction surfaces only."
+    "marketplace_reason": "No official MiMo Code marketplace contract was verified; the module uses documented native config, skills, agents, and instruction surfaces."
   },
   "runtime_launch": {
     "command": "<absolute-target>/bin/mimo",
-    "direct_command": "MIMOCODE_HOME=<absolute-target> MIMOCODE_CONFIG=<absolute-target>/config/mimocode.json <absolute-target>/bin/mimo [args...]",
-    "home_environment_variable": "MIMOCODE_HOME",
-    "config_environment_variable": "MIMOCODE_CONFIG",
+    "direct_command_source": "cli-tools/nddev_mimocode.py:launch_mimo",
+    "home_environment_source": "cli-tools/nddev_mimocode.py:isolated_child_environment",
     "executable_source": "validated-target-owned-XiaomiMiMo-release-asset",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "json_manager_errors_supported": true,
     "manager_command": "python3 cli-tools/nddev_mimocode.py launch --target <absolute-target> -- [args...]",
     "requires_clean_managed_target": true,
-    "blocked_launch_args": ["--dangerously-skip-permissions", "--never-ask", "--trust", "upgrade"],
+    "blocked_launch_args_source": "cli-tools/nddev_mimocode.py:BLOCKED_LAUNCH_FLAGS",
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
     "environment_inheritance": "allowlist",
-    "safe_inherited_environment": [
-      "CI",
-      "COLORTERM",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "LANG",
-      "LC_ALL",
-      "LC_CTYPE",
-      "NODE_EXTRA_CA_CERTS",
-      "NO_COLOR",
-      "NO_PROXY",
-      "REQUESTS_CA_BUNDLE",
-      "SSL_CERT_DIR",
-      "SSL_CERT_FILE",
-      "SYSTEMROOT",
-      "TERM",
-      "http_proxy",
-      "https_proxy",
-      "no_proxy"
-    ],
-    "token_environment_inheritance": "stripped"
+    "safe_inherited_environment_source": "cli-tools/nddev_mimocode.py:SAFE_CHILD_INHERITED_ENV_NAMES",
+    "manager_owned_runtime_env_source": "cli-tools/nddev_mimocode.py:MIMOCODE_FIXED_RUNTIME_ENV",
+    "manager_owned_runtime_env": {
+      "MIMOCODE_DISABLE_CLAUDE_CODE": "1",
+      "MIMOCODE_DISABLE_CLAUDE_CODE_COMMANDS": "1",
+      "MIMOCODE_DISABLE_CLAUDE_CODE_MCP": "1",
+      "MIMOCODE_DISABLE_CLAUDE_IMPORT": "1",
+      "MIMOCODE_DISABLE_EXTERNAL_SKILLS": "1",
+      "MIMOCODE_DISABLE_PROJECT_CONFIG": "1",
+      "MIMOCODE_PURE": "1",
+      "MIMOCODE_DISABLE_AUTOUPDATE": "1",
+      "MIMOCODE_DISABLE_LSP_DOWNLOAD": "1",
+      "MIMOCODE_DISABLE_MODELS_FETCH": "1",
+      "MIMOCODE_DISABLE_PROVIDER_ENV": "1",
+      "MIMOCODE_ENABLE_ANALYSIS": "0"
+    },
+    "project_config_discovery": "disabled by manager-owned MIMOCODE_DISABLE_PROJECT_CONFIG=1 while preserving managed MIMOCODE_CONFIG_DIR skills",
+    "claude_compatibility_loaders": "disabled by manager-owned Claude flags and MIMOCODE_DISABLE_CLAUDE_IMPORT=1",
+    "external_skills": "disabled for external .claude/.agents/.codex/.opencode scans; managed native skills still load from MIMOCODE_CONFIG_DIR",
+    "external_plugins": "config-declared external plugins disabled by MIMOCODE_PURE=1; known unmanaged project extension paths are rejected before launch",
+    "project_boundary_rejected_paths_source": "cli-tools/nddev_mimocode.py:PROJECT_BOUNDARY_PATHS",
+    "managed_config_dir_launch_closure_source": "cli-tools/nddev_mimocode.py:validate_launch_managed_config_boundary",
+    "managed_config_dir_launch_closure": "unknown files under MIMOCODE_CONFIG_DIR are rejected before launch so configured skills.paths and hook scans cannot expand beyond projected nddev-builder content",
+    "external_telemetry": "disabled by manager-owned MIMOCODE_ENABLE_ANALYSIS=0 independently of share: disabled",
+    "token_environment_inheritance": "stripped",
+    "lock_held_through_child": true,
+    "portable_fd_execution_claimed": false
   },
   "command_policy": {
-    "json_supported": ["list", "status", "plan", "install", "switch", "restore", "remove", "software-status", "install-cli", "update-cli", "remove-cli"],
-    "target_required": ["status", "plan", "install", "switch", "restore", "remove", "software-status", "install-cli", "update-cli", "remove-cli", "launch"],
+    "json_supported": [
+      "list",
+      "status",
+      "plan",
+      "install",
+      "switch",
+      "migrate",
+      "restore",
+      "remove",
+      "software-status",
+      "install-cli",
+      "update-cli",
+      "remove-cli"
+    ],
+    "target_required": [
+      "status",
+      "plan",
+      "install",
+      "switch",
+      "migrate",
+      "restore",
+      "remove",
+      "software-status",
+      "install-cli",
+      "update-cli",
+      "remove-cli",
+      "launch"
+    ],
     "plan_mutates": false,
     "restore_backup_option": "--backup <0..9>"
   },
@@ -93,45 +139,104 @@
     "managed_file_mode": "0600",
     "managed_directory_mode": "0700",
     "new_target_mode": "0700",
-    "lock": "exclusive sibling directory",
+    "lock": "persistent external bootstrap flock plus persistent target-internal flock",
+    "external_lock_root": "fixed-system-temp-root-product-uid",
+    "external_lock_persistent": true,
+    "internal_lock_persistent": true,
+    "lock_order": [
+      "external",
+      "internal"
+    ],
+    "release_order": [
+      "internal",
+      "external"
+    ],
+    "lock_held_through_child": true,
     "preserve_unmanaged_files": true,
     "preserve_unmanaged_config_keys": true,
+    "legacy_migrate_preserves_unmanaged_config_keys": true,
     "reject_symlink_targets": true,
     "reject_symlink_managed_files": true,
     "reject_hardlink_managed_files": true,
     "bounded_reads": true,
+    "durable_write_order": [
+      "stage",
+      "fchmod",
+      "file-fsync",
+      "replace",
+      "parent-fsync"
+    ],
+    "exact_postconditions": true,
     "rollback_on_failure": true,
+    "restore_removes_known_managed_paths_absent_from_backup": true,
+    "restore_unknown_backup_paths": "fail-closed",
     "target_bound_backups": true,
-    "backup_slots": 10
+    "backup_slots": 10,
+    "backup_file_records": "path-size-sha256",
+    "same_uid_no_sandbox_boundary": "Deliberate same-UID tampering outside the managed no-sandbox process boundary is not claimed to be prevented."
   },
   "software_install": {
     "tested_version": "0.1.9",
-    "source": "official XiaomiMiMo/MiMo-Code release assets with SHA-256 digests plus verified official installer",
+    "source": "official XiaomiMiMo/MiMo-Code release assets with SHA-256 digests plus verified official installer in --binary mode",
     "official_installer": "https://mimo.xiaomi.com/install",
     "official_installer_size": 15819,
     "official_installer_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
-    "installer_flags": ["--version", "0.1.9", "--no-modify-path", "--binary", "<verified-binary>"],
+    "installer_flags": [
+      "--version",
+      "0.1.9",
+      "--no-modify-path",
+      "--binary",
+      "<verified-binary>"
+    ],
     "package_manager_install": null,
-    "supported_platforms": ["macos", "linux", "windows"],
-    "staged_executable_policy": {
-      "verified_asset_metadata": "references/mimocode-baseline.json:release.assets.darwin-arm64.executable",
-      "archive_max_bytes": 268435456,
-      "executable_max_bytes": 134217728,
-      "staged_version_probe_timeout_seconds": 60,
-      "official_installer_mode": "0755",
-      "managed_mode": "0700",
-      "preserved_identity": [
-        "asset_url",
-        "asset_sha256",
-        "archive_member_path",
-        "archive_member_mode",
-        "installer_binary_mode",
-        "binary_size",
-        "binary_sha256",
-        "binary_mode",
-        "binary_max_bytes"
-      ]
+    "observed_official_asset_ids": [
+      "darwin-arm64",
+      "darwin-x64-baseline",
+      "darwin-x64",
+      "linux-arm64-musl",
+      "linux-arm64",
+      "linux-x64-baseline-musl",
+      "linux-x64-baseline",
+      "linux-x64-musl",
+      "linux-x64",
+      "windows-arm64",
+      "windows-x64-baseline",
+      "windows-x64"
+    ],
+    "supported_product_host_ids": [
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
+    ],
+    "rejected_product_host_ids": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
+    ],
+    "product_host_asset_selection": {
+      "macos-arm64": {
+        "default": "darwin-arm64"
+      },
+      "macos-x64": {
+        "avx2": "darwin-x64",
+        "baseline": "darwin-x64-baseline"
+      },
+      "ubuntu-glibc-arm64": {
+        "default": "linux-arm64"
+      },
+      "ubuntu-glibc-x64": {
+        "avx2": "linux-x64",
+        "baseline": "linux-x64-baseline"
+      }
     },
+    "platform_selection_source": "cli-tools/nddev_mimocode.py:detect_platform_selection",
+    "linux_product_scope": "Ubuntu desktop/server share the canonical ubuntu-glibc-* product host IDs and are checked by structured os-release ID=ubuntu plus glibc before network, stage, or runtime; ubuntu_version_floor is null because upstream publishes no official floor.",
+    "ubuntu_version_floor": null,
+    "staged_executable_policy_source": "cli-tools/nddev_mimocode.py:install_or_update_cli",
+    "staged_probe_environment_source": "cli-tools/nddev_mimocode.py:minimal_process_env",
+    "staged_probe_telemetry": "disabled by MIMOCODE_ENABLE_ANALYSIS=0",
     "layout": {
       "visible_command": "bin/mimo",
       "version_tree": "software/versions/0.1.9/mimo",

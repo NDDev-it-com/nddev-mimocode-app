@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "safe",
-  "description": "Read-first MiMo Code profile: planning and inspection are allowed, writes and shell execution are denied unless the upstream CLI asks outside this managed policy.",
-  "managed_files": ["config/mimocode.json", "config/AGENTS.md"],
-  "builder_projection": "native-config-skills-agents-instructions-workflows",
-  "builder_default_on": true,
-  "launch_args": []
-}

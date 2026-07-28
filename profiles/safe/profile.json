@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "safe",
+  "description": "Native MiMo Code safe profile using plan mode and ask/deny permissions without bypass flags.",
+  "default": false,
+  "default_agent": "plan",
+  "permission": {
+    "*": "ask",
+    "bash": "deny",
+    "edit": "deny",
+    "external_directory": "deny",
+    "glob": "allow",
+    "grep": "allow",
+    "read": "allow",
+    "skill": {
+      "*": "allow",
+      "nddev-builder": "allow"
+    },
+    "webfetch": "ask",
+    "websearch": "ask"
+  },
+  "launch_args": [
+    "--agent",
+    "plan"
+  ],
+  "launch_env": {}
+}

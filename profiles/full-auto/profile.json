@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "full-auto",
+  "description": "Default native MiMo Code full-auto profile using the source-proven permission bypass inside the isolated target.",
+  "default": true,
+  "default_agent": "build",
+  "permission": "allow",
+  "launch_args": [],
+  "launch_env": {
+    "MIMOCODE_AUTO_APPROVE_DELETE": "1",
+    "MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS": "1"
+  }
+}

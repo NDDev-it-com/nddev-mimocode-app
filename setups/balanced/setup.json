@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "balanced",
-  "description": "Interactive MiMo Code profile: read/search are allowed, edits and general shell execution stay approval-bound, common git inspection is allowed.",
-  "managed_files": ["config/mimocode.json", "config/AGENTS.md"],
-  "builder_projection": "native-config-skills-agents-instructions-workflows",
-  "builder_default_on": true,
-  "launch_args": []
-}

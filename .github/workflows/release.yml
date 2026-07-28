@@ -24,8 +24,9 @@ jobs:
       version: ${{ github.ref_name }}
       package_name: nddev-mimocode-app
       archive_paths: >-
-        README.md LICENSE VERSION CHANGELOG.md SECURITY.md .github build
-        cli-tools config plugins references setups
+        AGENTS.md .claude/CLAUDE.md README.md LICENSE VERSION CHANGELOG.md
+        SECURITY.md .gds/repository.yaml .github build cli-tools config plugins
+        profiles references setups
       runtime_paths: >-
-        README.md LICENSE VERSION build cli-tools config plugins references
-        setups
+        AGENTS.md .claude/CLAUDE.md README.md LICENSE VERSION build cli-tools
+        config plugins profiles references setups

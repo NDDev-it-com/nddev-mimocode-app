@@ -1,17 +1,23 @@
 {
   "schema_version": 1,
-  "captured_at": "2026-07-26",
+  "captured_at": "2026-07-28",
   "product": "MiMo Code",
   "command": "mimo",
   "install": {
     "script": "https://mimo.xiaomi.com/install",
     "script_size": 15819,
     "script_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
-    "flags": ["--version", "0.1.9", "--no-modify-path", "--binary", "<verified-binary>"],
-    "windows_script": "https://mimo.xiaomi.com/install.ps1",
+    "script_binary_mode_semantics": "When --binary is supplied, the official installer skips platform detection and download logic, copies the already supplied binary to $HOME/.mimocode/bin/mimo, chmods it 0755, and honors --no-modify-path.",
+    "flags": [
+      "--version",
+      "0.1.9",
+      "--no-modify-path",
+      "--binary",
+      "<verified-binary>"
+    ],
     "fds_latest_url": "https://mimocode.cnbj1.mi-fds.com/mimocode/mimocode/releases/latest",
     "fds_latest": "0.1.9",
-    "module_install_mechanism": "official-installer-with-pinned-github-asset",
+    "module_install_mechanism": "verified-official-release-asset-with-verified-official-binary-installer",
     "package_manager_install": null
   },
   "release": {
@@ -20,6 +26,20 @@
     "version": "0.1.9",
     "published_at": "2026-07-24T06:06:13Z",
     "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
+    "observed_asset_ids": [
+      "darwin-arm64",
+      "darwin-x64-baseline",
+      "darwin-x64",
+      "linux-arm64-musl",
+      "linux-arm64",
+      "linux-x64-baseline-musl",
+      "linux-x64-baseline",
+      "linux-x64-musl",
+      "linux-x64",
+      "windows-arm64",
+      "windows-x64-baseline",
+      "windows-x64"
+    ],
     "assets": {
       "darwin-arm64": {
         "name": "mimocode-darwin-arm64.zip",
@@ -102,33 +122,135 @@
       }
     }
   },
+  "supported_product_hosts": {
+    "supported_ids": [
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
+    ],
+    "rejected_ids": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
+    ],
+    "linux_distro_gate": "ID=ubuntu",
+    "linux_libc_gate": "glibc",
+    "ubuntu_version_floor": null,
+    "ubuntu_version_floor_semantics": "no-official-floor",
+    "product_host_asset_selection": {
+      "macos-arm64": {
+        "default": "darwin-arm64"
+      },
+      "macos-x64": {
+        "avx2": "darwin-x64",
+        "baseline": "darwin-x64-baseline"
+      },
+      "ubuntu-glibc-arm64": {
+        "default": "linux-arm64"
+      },
+      "ubuntu-glibc-x64": {
+        "avx2": "linux-x64",
+        "baseline": "linux-x64-baseline"
+      }
+    },
+    "selection_source": "cli-tools/nddev_mimocode.py:detect_platform_selection",
+    "scope_note": "NDDev production scope is macOS plus Ubuntu desktop/server on glibc for arm64/x64. Official musl and Windows assets are observed vendor artifacts but never selected by this module."
+  },
   "native_surfaces": {
     "config_root_env": "MIMOCODE_HOME",
     "config_dir_env": "MIMOCODE_CONFIG_DIR",
     "config_file_env": "MIMOCODE_CONFIG",
-    "global_config_files": ["~/.config/mimocode/mimocode.jsonc", "~/.config/mimocode/mimocode.json"],
-    "tui_config": "~/.config/mimocode/tui.json",
-    "data": "~/.local/share/mimocode",
-    "state": "~/.local/state/mimocode",
-    "cache": "~/.cache/mimocode",
-    "project_config_files": [".mimocode/mimocode.jsonc", ".mimocode/mimocode.json"],
+    "config_content_env": "MIMOCODE_CONFIG_CONTENT",
+    "global_config_files": [
+      "~/.config/mimocode/mimocode.jsonc",
+      "~/.config/mimocode/mimocode.json"
+    ],
+    "project_config_files": [
+      ".mimocode/mimocode.jsonc",
+      ".mimocode/mimocode.json"
+    ],
     "schema": "https://mimo.xiaomi.com/mimocode/config.json",
     "permission_field": "permission",
-    "instructions": [".mimocode/AGENTS.md", "AGENTS.md"],
-    "skills": ".mimocode/skills/**/SKILL.md",
-    "agents": ".mimocode/agent/*.md",
-    "workflows": ".mimocode/workflows/*.js",
-    "mcp": "mimocode.jsonc mcp object",
+    "full_auto_bypass_env": "MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS",
+    "delete_bypass_env": "MIMOCODE_AUTO_APPROVE_DELETE",
+    "provider_env_disable_env": "MIMOCODE_DISABLE_PROVIDER_ENV",
+    "manager_owned_runtime_flags": {
+      "MIMOCODE_DISABLE_PROJECT_CONFIG": "Disables project mimocode.json/mimocode.jsonc discovery, project .mimocode directory discovery, and project AGENTS.md/CLAUDE.md instruction discovery. It does not suppress MIMOCODE_CONFIG_DIR or configured skills.paths loading.",
+      "MIMOCODE_DISABLE_CLAUDE_CODE": "Disables Claude Code prompt inheritance and Claude Code skills through the v0.1.9 master Claude compatibility flag.",
+      "MIMOCODE_DISABLE_CLAUDE_CODE_COMMANDS": "Disables command discovery from ~/.claude/commands and project .claude/commands.",
+      "MIMOCODE_DISABLE_CLAUDE_CODE_MCP": "Disables Claude Code MCP compatibility loading from .claude.json files.",
+      "MIMOCODE_DISABLE_CLAUDE_IMPORT": "Disables best-effort Claude Code session import during process startup.",
+      "MIMOCODE_DISABLE_EXTERNAL_SKILLS": "Disables external .claude, .agents, .codex, and .opencode skill directory scans. Managed native skills under MIMOCODE_CONFIG_DIR and configured skills.paths still load in v0.1.9.",
+      "MIMOCODE_PURE": "Skips config-declared external server/TUI plugin origins. v0.1.9 still has separate internal TUI plugins and cwd .mimocode/tui scanning, so the manager also rejects known unmanaged project extension paths before launch.",
+      "MIMOCODE_ENABLE_ANALYSIS": "Defaults to enabled in v0.1.9; manager sets 0 for launch, installer, and staged version probes to avoid unrequested telemetry independently of share: disabled.",
+      "MIMOCODE_DISABLE_AUTOUPDATE": "Disables automatic update checks for launch and staged probes.",
+      "MIMOCODE_DISABLE_LSP_DOWNLOAD": "Disables runtime LSP downloads during launch and staged probes.",
+      "MIMOCODE_DISABLE_MODELS_FETCH": "Disables remote model-list fetches during launch and staged probes.",
+      "MIMOCODE_DISABLE_PROVIDER_ENV": "Disables upstream provider credential autodiscovery from the child process environment without forcing MIMOCODE_MIMO_ONLY."
+    },
+    "project_boundary_rejected_paths": [
+      ".mimocode/mimocode.json",
+      ".mimocode/mimocode.jsonc",
+      ".mimocode/plugin",
+      ".mimocode/plugins",
+      ".mimocode/tools",
+      ".mimocode/tui",
+      ".agents/skills",
+      ".claude",
+      ".claude.json",
+      ".codex/skills",
+      ".opencode/skills"
+    ],
+    "managed_config_dir_launch_closure": "MiMo Code v0.1.9 still loads managed MIMOCODE_CONFIG_DIR files and configured skills.paths after external skill disables, so the manager rejects unknown files under MIMOCODE_CONFIG_DIR before launch and allows only projected nddev-builder files.",
+    "mimo_only_default": "official docs and v0.1.9 source disagree; manager omits MIMOCODE_MIMO_ONLY to avoid forcing MiMo-only provider behavior",
+    "instructions": {
+      "preferred": "AGENTS.md",
+      "compatibility": "CLAUDE.md",
+      "config_field": "instructions"
+    },
+    "skills": {
+      "native_project": ".mimocode/skills/**/SKILL.md",
+      "native_global": "~/.config/mimocode/skills/**/SKILL.md",
+      "config_field": "skills.paths"
+    },
+    "agents": {
+      "config_field": "agent",
+      "markdown_dirs": [
+        "agents",
+        "agent"
+      ]
+    },
+    "mcp": "mimocode.json mcp object",
+    "custom_tools": ".mimocode/tools/*.ts or *.js",
+    "plugins": "mimocode.json plugin array or plugin/plugins directories",
+    "hooks": "plugin hook API",
     "marketplace": null
   },
   "sources": [
     "https://mimo.xiaomi.com/mimocode/install",
+    "https://mimo.xiaomi.com/install",
     "https://mimo.xiaomi.com/mimocode/config-overrides",
+    "https://mimo.xiaomi.com/mimocode/env-vars",
     "https://mimo.xiaomi.com/mimocode/config-files",
     "https://mimo.xiaomi.com/mimocode/permissions",
+    "https://mimo.xiaomi.com/mimocode/rules",
     "https://mimo.xiaomi.com/mimocode/skills",
     "https://mimo.xiaomi.com/mimocode/agents",
+    "https://mimo.xiaomi.com/mimocode/modes",
     "https://mimo.xiaomi.com/mimocode/cli-options",
-    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9"
+    "https://mimo.xiaomi.com/mimocode/mcp-servers",
+    "https://mimo.xiaomi.com/mimocode/custom-tools",
+    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/flag/flag.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/config/config.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/config/paths.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/config/permission.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/skill/index.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/plugin/index.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/session/instruction.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/cli/cmd/tui/plugin/runtime.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/index.ts"
   ]
 }
