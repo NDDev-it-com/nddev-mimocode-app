@@ -420,6 +420,19 @@ def validate_versions(errors: list[str]) -> None:
         require(transaction.get("durable_write_order") == ["stage", "fchmod", "file-fsync", "replace", "parent-fsync"], "durable write order contract mismatch", errors)
         require(transaction.get("exact_postconditions") is True, "exact postcondition contract missing", errors)
         require("lexical absolute-target validation" in transaction.get("pre_lock_target_observation", ""), "pre-lock target observation contract missing", errors)
+        require("canonical-target external bootstrap" in transaction.get("lock", ""), "canonical external lock contract missing", errors)
+        require("read-only inspection commands do not create" in str(transaction.get("internal_lock_persistent", "")), "read-only internal lock contract missing", errors)
+        require(
+            transaction.get("lock_order")
+            == [
+                "product-wide-external-coordination",
+                "target-filesystem-resolution",
+                "canonical-target-external-lock",
+                "target-internal-mutating-only",
+            ],
+            "transaction lock order contract mismatch",
+            errors,
+        )
         require("inode identity" in transaction.get("rollback_exact_object_graph", ""), "exact object graph contract missing inode identity", errors)
         require("rename-held undo" in transaction.get("rollback_strategy", ""), "rollback strategy contract mismatch", errors)
         require(transaction.get("restore_removes_known_managed_paths_absent_from_backup") is True, "restore deletion contract missing", errors)
@@ -461,7 +474,13 @@ def validate_versions(errors: list[str]) -> None:
     if isinstance(command_policy, dict):
         require(
             command_policy.get("target_preflight_order")
-            == ["supported-host", "lexical-absolute-target", "external-lifecycle-lock", "target-filesystem-resolution"],
+            == [
+                "supported-host",
+                "lexical-absolute-target",
+                "product-wide-external-coordination",
+                "target-filesystem-resolution",
+                "canonical-target-external-lock",
+            ],
             "target preflight order contract mismatch",
             errors,
         )
@@ -675,7 +694,9 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         return original_target(raw_target)
 
     def traced_acquire(descriptor: int, path: Path) -> None:
-        if path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
+        if path.name == f".{nddev_mimocode.PRODUCT_NAME}-{current_uid()}-lifecycle-locks":
+            trace.append("product-lock-acquire")
+        elif path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
             trace.append("external-lock-acquire")
         else:
             trace.append("target-lock-acquire")
@@ -734,9 +755,15 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
                     require(not original_path_present(command_target), f"{command} left a newly created target after failure", errors)
                     require(trace[:2] == ["host", "lexical-target"], f"{command} preflight order mismatch: {trace}", errors)
                     require(
+                        "product-lock-acquire" in trace
+                        and trace.index("product-lock-acquire") < trace.index("target-fs-canonicalization"),
+                        f"{command} did not coordinate before canonicalization: {trace}",
+                        errors,
+                    )
+                    require(
                         "target-path-present" in trace
                         and trace.index("target-path-present") > trace.index("external-lock-acquire"),
-                        f"{command} observed target before external lock: {trace}",
+                        f"{command} observed target before canonical external lock: {trace}",
                         errors,
                     )
                     require(
@@ -754,7 +781,8 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         nddev_mimocode.path_present = original_path_present
         nddev_mimocode.selected_asset = original_selected_asset
     require(
-        trace[:4] == ["host", "lexical-target", "external-lock-acquire", "target-fs-canonicalization"],
+        trace[:5]
+        == ["host", "lexical-target", "product-lock-acquire", "target-fs-canonicalization", "external-lock-acquire"],
         f"preflight order mismatch: {trace}",
         errors,
     )
@@ -804,6 +832,130 @@ def validate_setup_profiles(errors: list[str]) -> None:
             require(isinstance(config.get("permission"), dict), "safe permission must be object", errors)
             stamp = json.loads(desired[Path(nddev_mimocode.STAMP_NAME)].decode("utf-8"))
             require(stamp["launch_env"] == {}, "safe launch_env must be empty", errors)
+
+
+def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
+    with isolated_bootstrap_root(errors) as injected:
+        with tempfile.TemporaryDirectory(prefix="nddev-mimocode-readonly-locks.") as raw:
+            root = Path(raw)
+            root.chmod(0o700)
+            real_parent = root / "real-parent"
+            real_parent.mkdir(mode=0o700)
+            real_parent.chmod(0o700)
+            alias_parent = root / "alias-parent"
+            alias_parent.symlink_to(real_parent, target_is_directory=True)
+            missing_real = real_parent / "missing-target"
+            missing_alias = alias_parent / "missing-target"
+            canonical_missing = real_parent.resolve() / "missing-target"
+            lock_events: list[tuple[str, str]] = []
+            original_acquire = nddev_mimocode.acquire_file_lock
+
+            def traced_acquire(descriptor: int, path: Path) -> None:
+                if path.name == f".{nddev_mimocode.PRODUCT_NAME}-{current_uid()}-lifecycle-locks":
+                    lock_events.append(("product", str(path)))
+                elif path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX):
+                    lock_events.append(("external", str(path)))
+                else:
+                    lock_events.append(("internal", str(path)))
+                return original_acquire(descriptor, path)
+
+            nddev_mimocode.acquire_file_lock = traced_acquire
+            try:
+                observed_external: dict[str, dict[str, str]] = {}
+                for command in ("status", "plan", "software-status"):
+                    observed_external[command] = {}
+                    for label, target in (("real", missing_real), ("alias", missing_alias)):
+                        before = len(lock_events)
+                        rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
+                        require(rc == 0, f"{command} {label} missing target failed through symlink parent", errors)
+                        require(stderr == "", f"{command} {label} missing target wrote stderr", errors)
+                        payload = json.loads(stdout)
+                        if command == "status":
+                            require(payload.get("state") == "missing", "missing status state mismatch", errors)
+                        elif command == "plan":
+                            require(payload.get("operation") == "install", "missing plan operation mismatch", errors)
+                            require(payload.get("mutates") is False, "missing plan must declare mutates false", errors)
+                        else:
+                            require(payload.get("present") is False and payload.get("installed") is False, "missing software-status payload mismatch", errors)
+                        require(payload.get("target") == str(canonical_missing), f"{command} {label} did not report canonical missing target", errors)
+                        require(not missing_real.exists(), f"{command} {label} created the canonical missing target", errors)
+                        require(not missing_alias.exists(), f"{command} {label} created the alias missing target", errors)
+                        events = lock_events[before:]
+                        kinds = [kind for kind, _path in events]
+                        require(kinds.count("product") == 1, f"{command} {label} product coordination mismatch: {events}", errors)
+                        require(kinds.count("external") == 1, f"{command} {label} canonical external lock mismatch: {events}", errors)
+                        require("internal" not in kinds, f"{command} {label} created an internal target lock for an absent read", errors)
+                        require(kinds.index("product") < kinds.index("external"), f"{command} {label} lock order mismatch: {events}", errors)
+                        observed_external[command][label] = [path for kind, path in events if kind == "external"][0]
+                    require(
+                        observed_external[command]["real"] == observed_external[command]["alias"],
+                        f"{command} real and alias missing targets used different canonical external locks",
+                        errors,
+                    )
+            finally:
+                nddev_mimocode.acquire_file_lock = original_acquire
+
+            with nddev_mimocode.bootstrap_lifecycle_lock(missing_alias) as canonical_target:
+                require(canonical_target == canonical_missing, "held alias lock canonical target mismatch", errors)
+                child = (
+                    "from __future__ import annotations\n"
+                    "import importlib.util, pathlib, sys\n"
+                    "sys.dont_write_bytecode = True\n"
+                    "manager_path = pathlib.Path(sys.argv[1])\n"
+                    "bootstrap_root = pathlib.Path(sys.argv[2])\n"
+                    "target = sys.argv[3]\n"
+                    "spec = importlib.util.spec_from_file_location('nddev_mimocode_child', manager_path)\n"
+                    "module = importlib.util.module_from_spec(spec)\n"
+                    "assert spec.loader is not None\n"
+                    "spec.loader.exec_module(module)\n"
+                    "module.fixed_system_temp_root = lambda: bootstrap_root\n"
+                    "raise SystemExit(module.main(['status', '--target', target, '--json']))\n"
+                )
+                child_env = {"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"}
+                completed = subprocess.run(
+                    [sys.executable, "-B", "-c", child, str(MANAGER_PATH), str(injected), str(canonical_missing)],
+                    env=child_env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+                require(completed.returncode == 2, "held alias canonical lock did not block real target status", errors)
+                require(completed.stderr == "", "held alias canonical lock child wrote stderr", errors)
+                try:
+                    payload = json.loads(completed.stdout)
+                except json.JSONDecodeError:
+                    errors.append("held alias canonical lock child did not emit JSON")
+                else:
+                    require("target is locked" in payload.get("error", ""), "held alias canonical lock error mismatch", errors)
+
+            for fixture in ("absent-lock-graph", "preexisting-lock-graph"):
+                target = root / fixture
+                target.mkdir(mode=0o700)
+                target.chmod(0o700)
+                if fixture == "preexisting-lock-graph":
+                    lock_dir = nddev_mimocode.lock_directory_path(target)
+                    lock_dir.mkdir(mode=0o700)
+                    lock_dir.chmod(0o700)
+                    lock_file = nddev_mimocode.lock_path(target)
+                    lock_file.write_bytes(b"preexisting inspection lock\n")
+                    lock_file.chmod(0o600)
+                    old_ns = 1_700_000_000_123_456_789
+                    os.utime(lock_file, ns=(old_ns, old_ns))
+                    os.utime(lock_dir, ns=(old_ns, old_ns))
+                    os.utime(target, ns=(old_ns, old_ns))
+                for command in ("status", "plan", "software-status"):
+                    before_graph = exact_tree_identity(target)
+                    rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
+                    require(rc == 0, f"{command} read-only no-op failed for {fixture}", errors)
+                    require(stderr == "", f"{command} read-only no-op wrote stderr for {fixture}", errors)
+                    payload = json.loads(stdout)
+                    require(payload.get("ok") is True, f"{command} read-only no-op payload mismatch for {fixture}", errors)
+                    require(
+                        exact_tree_identity(target) == before_graph,
+                        f"{command} read-only no-op changed target graph for {fixture}",
+                        errors,
+                    )
 
 
 def validate_launch_environment(errors: list[str]) -> None:
@@ -1006,6 +1158,29 @@ def tree_snapshot(root: Path) -> dict[str, tuple[str, int, str | None]]:
             result[relative] = ("file", mode, hashlib.sha256(path.read_bytes()).hexdigest())
         else:
             result[relative] = ("other", mode, None)
+    return result
+
+
+def exact_tree_identity(root: Path) -> dict[str, tuple[str, int, int, int, int, str | None]]:
+    if not root.exists():
+        return {}
+    result: dict[str, tuple[str, int, int, int, int, str | None]] = {}
+    paths = [root, *sorted(root.rglob("*"), key=lambda item: str(item.relative_to(root)))]
+    for path in paths:
+        relative = "." if path == root else str(path.relative_to(root))
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None
+        if stat.S_ISDIR(info.st_mode):
+            kind = "dir"
+        elif stat.S_ISREG(info.st_mode):
+            kind = "file"
+        elif stat.S_ISLNK(info.st_mode):
+            kind = "symlink"
+            digest = os.readlink(path)
+        else:
+            kind = "other"
+        result[relative] = (kind, info.st_ino, info.st_size, mode, info.st_mtime_ns, digest)
     return result
 
 
@@ -1978,6 +2153,7 @@ def main() -> int:
     validate_platform_selection(errors)
     validate_cli_json_and_preflight_boundary(errors)
     validate_setup_profiles(errors)
+    validate_read_only_alias_and_lock_noop(errors)
     validate_launch_environment(errors)
     validate_project_boundary(errors)
     validate_replace_managed_state_cleanup(errors)

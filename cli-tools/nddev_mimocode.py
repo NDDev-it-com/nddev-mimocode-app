@@ -1264,7 +1264,8 @@ def bootstrap_lock_pool(_target: Path) -> Path:
 
 
 def bootstrap_lock_path(target: Path) -> Path:
-    return bootstrap_lock_pool(target) / f"{bootstrap_lock_key(target)}{BOOTSTRAP_LOCK_SUFFIX}"
+    canonical_target = canonical_target_for_bootstrap_lock(target)
+    return bootstrap_lock_pool(canonical_target) / f"{bootstrap_lock_key(canonical_target)}{BOOTSTRAP_LOCK_SUFFIX}"
 
 
 def require_safe_target_parent_for_creation(parent: Path) -> None:
@@ -1276,6 +1277,17 @@ def require_safe_target_parent_for_creation(parent: Path) -> None:
     fail("target parent must be private to the current user or sticky")
 
 
+def canonical_parent_for_creation(parent: Path) -> Path:
+    try:
+        canonical_parent = parent.resolve(strict=True)
+    except FileNotFoundError:
+        fail("target parent is missing")
+    except OSError as exc:
+        fail(f"cannot resolve target parent: {exc}")
+    require_safe_target_parent_for_creation(canonical_parent)
+    return canonical_parent
+
+
 def canonical_target_for_bootstrap_lock(target: Path) -> Path:
     if not target.is_absolute():
         fail("--target must be an absolute path")
@@ -1284,8 +1296,7 @@ def canonical_target_for_bootstrap_lock(target: Path) -> Path:
     try:
         info = target.lstat()
     except FileNotFoundError:
-        require_safe_target_parent_for_creation(target.parent)
-        return target.parent.resolve() / target.name
+        return canonical_parent_for_creation(target.parent) / target.name
     if stat.S_ISLNK(info.st_mode):
         fail("--target must not be a symlink")
     if not stat.S_ISDIR(info.st_mode):
@@ -1312,6 +1323,25 @@ def ensure_bootstrap_lock_pool(canonical_target: Path) -> Path:
     if not is_owner_private_directory(info):
         fail("bootstrap lifecycle lock pool must be owned by the current user with mode 0700")
     return pool
+
+
+@contextlib.contextmanager
+def product_lifecycle_lock(pool: Path) -> Iterator[None]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    descriptor = os.open(pool, flags)
+    acquired = False
+    try:
+        acquire_file_lock(descriptor, pool)
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            release_file_lock(descriptor)
+        os.close(descriptor)
 
 
 def require_lock_file(path: Path, label: str) -> os.stat_result:
@@ -1441,21 +1471,26 @@ def validate_bootstrap_lock_binding(descriptor: int, path: Path, canonical_targe
 def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
     if not target.is_absolute():
         fail("--target must be an absolute path")
-    target_key = bootstrap_lock_key(target)
     pool = ensure_bootstrap_lock_pool(target)
-    path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
-    descriptor = open_persistent_lock_file(path, "bootstrap lifecycle lock file", create=True)
+    descriptor = -1
     acquired = False
+    path: Path | None = None
+    canonical_target: Path | None = None
     try:
-        acquire_file_lock(descriptor, path)
-        acquired = True
-        canonical_target = canonical_target_for_bootstrap_lock(target)
-        validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
+        with product_lifecycle_lock(pool):
+            canonical_target = canonical_target_for_bootstrap_lock(target)
+            target_key = bootstrap_lock_key(canonical_target)
+            path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
+            descriptor = open_persistent_lock_file(path, "bootstrap lifecycle lock file", create=True)
+            acquire_file_lock(descriptor, path)
+            acquired = True
+            validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
         yield canonical_target
     finally:
         if acquired:
             release_file_lock(descriptor)
-        os.close(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def recover_protected_lock_directory_if_unlocked(target: Path, info: os.stat_result) -> None:
@@ -1557,8 +1592,7 @@ def locked_inspection_target(target: Path) -> Iterator[Path]:
     with bootstrap_lifecycle_lock(target) as canonical_target:
         if path_present(canonical_target):
             require_private_directory(canonical_target, "target")
-            with target_lock(canonical_target):
-                yield canonical_target
+            yield canonical_target
         else:
             yield canonical_target
 

@@ -140,8 +140,9 @@
     "target_preflight_order": [
       "supported-host",
       "lexical-absolute-target",
-      "external-lifecycle-lock",
-      "target-filesystem-resolution"
+      "product-wide-external-coordination",
+      "target-filesystem-resolution",
+      "canonical-target-external-lock"
     ],
     "json_argparse_errors": "invalid commands, missing required arguments, and type errors return rc 2 with JSON stdout and empty stderr when --json is present"
   },
@@ -149,13 +150,15 @@
     "managed_file_mode": "0600",
     "managed_directory_mode": "0700",
     "new_target_mode": "0700",
-    "lock": "persistent external bootstrap flock plus persistent target-internal flock",
+    "lock": "product-wide external coordination for canonicalization, persistent canonical-target external bootstrap flock, and persistent target-internal flock only for mutating lifecycle commands",
     "external_lock_root": "fixed-system-temp-root-product-uid",
     "external_lock_persistent": true,
-    "internal_lock_persistent": true,
+    "internal_lock_persistent": "mutating commands only; read-only inspection commands do not create target-internal lock graph",
     "lock_order": [
-      "external",
-      "internal"
+      "product-wide-external-coordination",
+      "target-filesystem-resolution",
+      "canonical-target-external-lock",
+      "target-internal-mutating-only"
     ],
     "pre_lock_target_observation": "none; only lexical absolute-target validation may precede the stable external lifecycle lock",
     "release_order": [

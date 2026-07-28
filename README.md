@@ -18,7 +18,10 @@ source downloads reported by the GitHub release page, as vendor observation
 separate from the supported subset.
 For every target-bound command the supported-host preflight runs before target
 filesystem inspection; only lexical absolute-target validation precedes the
-stable external lifecycle lock.
+external lifecycle coordination. The manager resolves target aliases under a
+product-wide external lock, then acquires the canonical-target external lock
+before status, planning, mutation, software inspection, or launch handoff.
+Read-only commands do not create target-internal lock state.
 
 Managed launch and staged probes set manager-owned MiMo Code flags that disable
 project config discovery, Claude compatibility loaders, external skill scans,
