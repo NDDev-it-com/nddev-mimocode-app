@@ -192,6 +192,15 @@
     "rollback_on_failure": true,
     "rollback_exact_object_graph": "path presence, kind, directory/file topology, bytes, sizes, modes, inode identity, and modification times for in-scope target, control, lock, backup, and software paths",
     "rollback_strategy": "rename-held undo material preserved until lifecycle postconditions pass and immutable postcommit cleanup journal reaches final-path no-replace publication",
+    "precommit_recovery_intent": "complete durable authority under .nddev-mimocode-recovery/NDDEV-MIMOCODE-RECOVERY.<pid>.<time>.json is published before every visible rollback, stage, recovery, backup, software, or cleanup source move; it binds canonical target, fixed recovery parent, bounded relative source/stash/generated paths, created directory candidates, and exact object graph records",
+    "precommit_recovery_publish_order": [
+      "complete intent file-fsync",
+      "atomic no-replace final-path publication",
+      "recovery parent-fsync",
+      "visible source move"
+    ],
+    "precommit_recovery_read_only": "read-only commands fail closed without recovery when pre-commit recovery state or publication aliases are present; mutating commands recover exact same-inode aliases and restore-or-complete only under exclusive target coordination",
+    "precommit_recovery_intent_max_bytes": 4194304,
     "postcommit_cleanup_journal": "immutable complete no-replace journal at .nddev-mimocode-cleanup/NDDEV-MIMOCODE-CLEANUP.json; it binds canonical target, fixed cleanup parent, bounded relative tombstones, kind, uid, mode, nlink, dev+ino, size, mtime, and tree digests; read-only commands validate and report only, while mutating commands recover one exact publication alias and drain before active changes",
     "postcommit_cleanup_journal_max_bytes": 4194304,
     "postcommit_cleanup_publish_order": [

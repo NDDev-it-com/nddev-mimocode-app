@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate nddev-mimocode-app public contracts without live side effects."""
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -32,8 +33,25 @@ MANAGER_SPEC.loader.exec_module(nddev_mimocode)
 SEMVER = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+].*)?\Z")
 SETUP_IDS = ["nddev-builder"]
 PROFILE_IDS = ["full-auto", "safe"]
-SETUP_LIFECYCLE = ["list", "status", "plan", "install", "update", "switch", "migrate", "restore", "remove"]
-FULL_LIFECYCLE = [*SETUP_LIFECYCLE, "software-status", "install-cli", "update-cli", "remove-cli", "launch"]
+SETUP_LIFECYCLE = [
+    "list",
+    "status",
+    "plan",
+    "install",
+    "update",
+    "switch",
+    "migrate",
+    "restore",
+    "remove",
+]
+FULL_LIFECYCLE = [
+    *SETUP_LIFECYCLE,
+    "software-status",
+    "install-cli",
+    "update-cli",
+    "remove-cli",
+    "launch",
+]
 JSON_COMMANDS = [command for command in FULL_LIFECYCLE if command != "launch"]
 TARGET_COMMANDS = [command for command in FULL_LIFECYCLE if command != "list"]
 SHARED_CI_COMMIT = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
@@ -86,7 +104,15 @@ REQUIRED_RELEASE_PERMISSIONS = {
     "artifact-metadata": "write",
 }
 REQUIRED_RELEASE_INPUTS = {"version", "package_name", "archive_paths", "runtime_paths"}
-REQUIRED_CONTRACT_ROOTS = {"build", "cli-tools", "config", "plugins", "profiles", "references", "setups"}
+REQUIRED_CONTRACT_ROOTS = {
+    "build",
+    "cli-tools",
+    "config",
+    "plugins",
+    "profiles",
+    "references",
+    "setups",
+}
 PRIVATE_PATH_MARKERS = {
     ".pytest_cache",
     ".ruff_cache",
@@ -192,7 +218,9 @@ def require_manager_failure(callable_obj: Any, message: str, errors: list[str]) 
     errors.append(message)
 
 
-def require_exception(callable_obj: Any, exception_type: type[BaseException], message: str, errors: list[str]) -> None:
+def require_exception(
+    callable_obj: Any, exception_type: type[BaseException], message: str, errors: list[str]
+) -> None:
     try:
         callable_obj()
     except exception_type:
@@ -229,9 +257,13 @@ def bootstrap_product_root(system_root: Path) -> Path:
 
 def is_product_lifecycle_lock_path(path: Path) -> bool:
     try:
-        return path.resolve() == (
-            bootstrap_product_root(nddev_mimocode.fixed_system_temp_root()) / nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
-        ).resolve()
+        return (
+            path.resolve()
+            == (
+                bootstrap_product_root(nddev_mimocode.fixed_system_temp_root())
+                / nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
+            ).resolve()
+        )
     except OSError:
         return False
 
@@ -266,8 +298,15 @@ def real_bootstrap_snapshot(path: Path) -> dict[str, Any]:
         return snapshot
     for child in entries:
         child_info = child.lstat()
-        record: dict[str, Any] = {"name": child.name, "identity": path_identity(child), "type": "other"}
-        if stat.S_ISREG(child_info.st_mode) and child_info.st_size <= nddev_mimocode.METADATA_MAX_BYTES:
+        record: dict[str, Any] = {
+            "name": child.name,
+            "identity": path_identity(child),
+            "type": "other",
+        }
+        if (
+            stat.S_ISREG(child_info.st_mode)
+            and child_info.st_size <= nddev_mimocode.METADATA_MAX_BYTES
+        ):
             record["type"] = "file"
             record["sha256"] = sha256_file(child)
         elif stat.S_ISDIR(child_info.st_mode):
@@ -325,7 +364,9 @@ def validate_no_private_markers(errors: list[str]) -> None:
     for raw in files:
         path = ROOT / raw
         text = path.read_text(encoding="utf-8", errors="ignore")
-        require(PLACEHOLDER_MARKER not in text.lower(), f"placeholder marker remains in {raw}", errors)
+        require(
+            PLACEHOLDER_MARKER not in text.lower(), f"placeholder marker remains in {raw}", errors
+        )
         for marker in PRIVATE_TEXT_MARKERS:
             require(marker not in text, f"private marker {marker!r} appears in {raw}", errors)
 
@@ -334,7 +375,11 @@ def validate_claude_bridge(errors: list[str]) -> None:
     agents = ROOT / "AGENTS.md"
     claude_dir = ROOT / ".claude"
     bridge = claude_dir / "CLAUDE.md"
-    for path, label in ((agents, "AGENTS.md"), (claude_dir, ".claude"), (bridge, ".claude/CLAUDE.md")):
+    for path, label in (
+        (agents, "AGENTS.md"),
+        (claude_dir, ".claude"),
+        (bridge, ".claude/CLAUDE.md"),
+    ):
         try:
             info = path.lstat()
         except FileNotFoundError:
@@ -343,7 +388,11 @@ def validate_claude_bridge(errors: list[str]) -> None:
         require(not stat.S_ISLNK(info.st_mode), f"{label} must not be a symlink", errors)
     require(agents.is_file(), "AGENTS.md must be a regular file", errors)
     require(claude_dir.is_dir(), ".claude must be a real directory", errors)
-    require(sorted(item.name for item in claude_dir.iterdir()) == ["CLAUDE.md"], ".claude must contain only CLAUDE.md", errors)
+    require(
+        sorted(item.name for item in claude_dir.iterdir()) == ["CLAUDE.md"],
+        ".claude must contain only CLAUDE.md",
+        errors,
+    )
     require(bridge.is_file(), ".claude/CLAUDE.md must be a regular file", errors)
     require(bridge.read_bytes() == b"@../AGENTS.md\n", ".claude/CLAUDE.md bytes mismatch", errors)
 
@@ -361,25 +410,83 @@ def validate_versions(errors: list[str]) -> None:
     require(contract.get("contract_version") == 2, "contract version mismatch", errors)
     require(build.get("build_version") == version, "build version mismatch", errors)
     require(manifest.get("build_version") == version, "manifest version mismatch", errors)
-    require(contract.get("builder_capability", {}).get("version") == version, "builder version mismatch", errors)
-    require(build.get("nddev_builder_extension_version") == version, "builder extension version mismatch", errors)
+    require(
+        contract.get("builder_capability", {}).get("version") == version,
+        "builder version mismatch",
+        errors,
+    )
+    require(
+        build.get("nddev_builder_extension_version") == version,
+        "builder extension version mismatch",
+        errors,
+    )
     require(build.get("python_requires") == ">=3.9", "build python_requires mismatch", errors)
-    require(build.get("mimocode_tested") == nddev_mimocode.TESTED_VERSION, "tested version mismatch", errors)
+    require(
+        build.get("mimocode_tested") == nddev_mimocode.TESTED_VERSION,
+        "tested version mismatch",
+        errors,
+    )
     require(build.get("command") == nddev_mimocode.COMMAND_NAME, "command mismatch", errors)
-    require(build.get("official_installer") == nddev_mimocode.INSTALLER_URL, "installer URL mismatch", errors)
-    require(build.get("official_installer_size") == nddev_mimocode.INSTALLER_SIZE, "installer size mismatch", errors)
-    require(build.get("official_installer_sha256") == nddev_mimocode.INSTALLER_SHA256, "installer SHA mismatch", errors)
+    require(
+        build.get("official_installer") == nddev_mimocode.INSTALLER_URL,
+        "installer URL mismatch",
+        errors,
+    )
+    require(
+        build.get("official_installer_size") == nddev_mimocode.INSTALLER_SIZE,
+        "installer size mismatch",
+        errors,
+    )
+    require(
+        build.get("official_installer_sha256") == nddev_mimocode.INSTALLER_SHA256,
+        "installer SHA mismatch",
+        errors,
+    )
     runtime = manifest.get("runtime_compatibility")
     require(isinstance(runtime, dict), "manifest runtime_compatibility missing", errors)
     if isinstance(runtime, dict):
-        require(runtime.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT, "manifest release page asset count mismatch", errors)
-        require(runtime.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS, "manifest generated source downloads mismatch", errors)
-        require(runtime.get("observed_uploaded_runtime_asset_ids") == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "manifest observed runtime asset ids mismatch", errors)
-        require(runtime.get("supported_product_host_ids") == SUPPORTED_PRODUCT_HOST_IDS, "manifest product host ids mismatch", errors)
-        require(runtime.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS, "manifest rejected host ids mismatch", errors)
-        require(runtime.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION, "manifest product host asset selection mismatch", errors)
-        require(runtime.get("platform_selection_source") == "cli-tools/nddev_mimocode.py:detect_platform_selection", "manifest platform source mismatch", errors)
-        require(runtime.get("target_preflight_order_source") == "cli-tools/nddev_mimocode.py:run", "manifest preflight source mismatch", errors)
+        require(
+            runtime.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT,
+            "manifest release page asset count mismatch",
+            errors,
+        )
+        require(
+            runtime.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS,
+            "manifest generated source downloads mismatch",
+            errors,
+        )
+        require(
+            runtime.get("observed_uploaded_runtime_asset_ids")
+            == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS,
+            "manifest observed runtime asset ids mismatch",
+            errors,
+        )
+        require(
+            runtime.get("supported_product_host_ids") == SUPPORTED_PRODUCT_HOST_IDS,
+            "manifest product host ids mismatch",
+            errors,
+        )
+        require(
+            runtime.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS,
+            "manifest rejected host ids mismatch",
+            errors,
+        )
+        require(
+            runtime.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION,
+            "manifest product host asset selection mismatch",
+            errors,
+        )
+        require(
+            runtime.get("platform_selection_source")
+            == "cli-tools/nddev_mimocode.py:detect_platform_selection",
+            "manifest platform source mismatch",
+            errors,
+        )
+        require(
+            runtime.get("target_preflight_order_source") == "cli-tools/nddev_mimocode.py:run",
+            "manifest preflight source mismatch",
+            errors,
+        )
     release = baseline.get("release")
     install = baseline.get("install")
     product_hosts = baseline.get("supported_product_hosts")
@@ -387,70 +494,281 @@ def validate_versions(errors: list[str]) -> None:
     require(isinstance(install, dict), "baseline install missing", errors)
     require(isinstance(product_hosts, dict), "baseline supported_product_hosts missing", errors)
     if isinstance(release, dict):
-        require(release.get("version") == build.get("mimocode_tested"), "baseline release mismatch", errors)
-        require(release.get("tag") == build.get("mimocode_release_tag"), "baseline tag mismatch", errors)
-        require(release.get("published_at") == build.get("mimocode_published_at"), "baseline published_at mismatch", errors)
-        require(release.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT, "baseline release page asset count mismatch", errors)
-        require(release.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS, "baseline generated source downloads mismatch", errors)
-        require(release.get("observed_uploaded_runtime_asset_ids") == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "baseline observed runtime asset ids mismatch", errors)
-        require(set(release.get("assets", {})) == set(OBSERVED_UPLOADED_RUNTIME_ASSET_IDS), "observed runtime asset key mismatch", errors)
+        require(
+            release.get("version") == build.get("mimocode_tested"),
+            "baseline release mismatch",
+            errors,
+        )
+        require(
+            release.get("tag") == build.get("mimocode_release_tag"), "baseline tag mismatch", errors
+        )
+        require(
+            release.get("published_at") == build.get("mimocode_published_at"),
+            "baseline published_at mismatch",
+            errors,
+        )
+        require(
+            release.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT,
+            "baseline release page asset count mismatch",
+            errors,
+        )
+        require(
+            release.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS,
+            "baseline generated source downloads mismatch",
+            errors,
+        )
+        require(
+            release.get("observed_uploaded_runtime_asset_ids")
+            == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS,
+            "baseline observed runtime asset ids mismatch",
+            errors,
+        )
+        require(
+            set(release.get("assets", {})) == set(OBSERVED_UPLOADED_RUNTIME_ASSET_IDS),
+            "observed runtime asset key mismatch",
+            errors,
+        )
     if isinstance(product_hosts, dict):
-        require(product_hosts.get("supported_ids") == SUPPORTED_PRODUCT_HOST_IDS, "baseline product host ids mismatch", errors)
-        require(product_hosts.get("rejected_ids") == REJECTED_PRODUCT_HOST_IDS, "baseline rejected host ids mismatch", errors)
-        require(product_hosts.get("linux_distro_gate") == "ID=ubuntu", "baseline Ubuntu gate mismatch", errors)
-        require(product_hosts.get("linux_libc_gate") == "glibc", "baseline libc gate mismatch", errors)
-        require(product_hosts.get("ubuntu_version_floor") is None, "baseline must not invent an Ubuntu version floor", errors)
-        require(product_hosts.get("ubuntu_version_floor_semantics") == "no-official-floor", "baseline Ubuntu floor semantics mismatch", errors)
-        require(product_hosts.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION, "baseline product host asset selection mismatch", errors)
-        require(product_hosts.get("selection_source") == "cli-tools/nddev_mimocode.py:detect_platform_selection", "baseline platform selection source mismatch", errors)
+        require(
+            product_hosts.get("supported_ids") == SUPPORTED_PRODUCT_HOST_IDS,
+            "baseline product host ids mismatch",
+            errors,
+        )
+        require(
+            product_hosts.get("rejected_ids") == REJECTED_PRODUCT_HOST_IDS,
+            "baseline rejected host ids mismatch",
+            errors,
+        )
+        require(
+            product_hosts.get("linux_distro_gate") == "ID=ubuntu",
+            "baseline Ubuntu gate mismatch",
+            errors,
+        )
+        require(
+            product_hosts.get("linux_libc_gate") == "glibc", "baseline libc gate mismatch", errors
+        )
+        require(
+            product_hosts.get("ubuntu_version_floor") is None,
+            "baseline must not invent an Ubuntu version floor",
+            errors,
+        )
+        require(
+            product_hosts.get("ubuntu_version_floor_semantics") == "no-official-floor",
+            "baseline Ubuntu floor semantics mismatch",
+            errors,
+        )
+        require(
+            product_hosts.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION,
+            "baseline product host asset selection mismatch",
+            errors,
+        )
+        require(
+            product_hosts.get("selection_source")
+            == "cli-tools/nddev_mimocode.py:detect_platform_selection",
+            "baseline platform selection source mismatch",
+            errors,
+        )
     if isinstance(install, dict):
-        require(install.get("script") == nddev_mimocode.INSTALLER_URL, "baseline installer URL mismatch", errors)
-        require(install.get("script_size") == nddev_mimocode.INSTALLER_SIZE, "baseline installer size mismatch", errors)
-        require(install.get("script_sha256") == nddev_mimocode.INSTALLER_SHA256, "baseline installer SHA mismatch", errors)
-        require(install.get("package_manager_install") is None, "package manager install must be null", errors)
+        require(
+            install.get("script") == nddev_mimocode.INSTALLER_URL,
+            "baseline installer URL mismatch",
+            errors,
+        )
+        require(
+            install.get("script_size") == nddev_mimocode.INSTALLER_SIZE,
+            "baseline installer size mismatch",
+            errors,
+        )
+        require(
+            install.get("script_sha256") == nddev_mimocode.INSTALLER_SHA256,
+            "baseline installer SHA mismatch",
+            errors,
+        )
+        require(
+            install.get("package_manager_install") is None,
+            "package manager install must be null",
+            errors,
+        )
     native = baseline.get("native_surfaces")
     require(isinstance(native, dict), "baseline native_surfaces missing", errors)
     if isinstance(native, dict):
         flags = native.get("manager_owned_runtime_flags")
         require(isinstance(flags, dict), "baseline runtime flag semantics missing", errors)
         if isinstance(flags, dict):
-            require(set(flags) == set(EXPECTED_FIXED_RUNTIME_ENV), "baseline runtime flag key set mismatch", errors)
-            require("MIMOCODE_CONFIG_DIR" in flags.get("MIMOCODE_DISABLE_EXTERNAL_SKILLS", ""), "external skill flag semantics must mention MIMOCODE_CONFIG_DIR", errors)
-            require("Defaults to enabled" in flags.get("MIMOCODE_ENABLE_ANALYSIS", ""), "analysis flag semantics must record default-on behavior", errors)
-            require("manager sets 0" in flags.get("MIMOCODE_ENABLE_ANALYSIS", ""), "analysis flag semantics must record value 0", errors)
-        require(native.get("project_boundary_rejected_paths") == EXPECTED_PROJECT_BOUNDARY_PATHS, "baseline project boundary paths mismatch", errors)
-        require("unknown files under MIMOCODE_CONFIG_DIR" in native.get("managed_config_dir_launch_closure", ""), "baseline managed config closure missing", errors)
+            require(
+                set(flags) == set(EXPECTED_FIXED_RUNTIME_ENV),
+                "baseline runtime flag key set mismatch",
+                errors,
+            )
+            require(
+                "MIMOCODE_CONFIG_DIR" in flags.get("MIMOCODE_DISABLE_EXTERNAL_SKILLS", ""),
+                "external skill flag semantics must mention MIMOCODE_CONFIG_DIR",
+                errors,
+            )
+            require(
+                "Defaults to enabled" in flags.get("MIMOCODE_ENABLE_ANALYSIS", ""),
+                "analysis flag semantics must record default-on behavior",
+                errors,
+            )
+            require(
+                "manager sets 0" in flags.get("MIMOCODE_ENABLE_ANALYSIS", ""),
+                "analysis flag semantics must record value 0",
+                errors,
+            )
+        require(
+            native.get("project_boundary_rejected_paths") == EXPECTED_PROJECT_BOUNDARY_PATHS,
+            "baseline project boundary paths mismatch",
+            errors,
+        )
+        require(
+            "unknown files under MIMOCODE_CONFIG_DIR"
+            in native.get("managed_config_dir_launch_closure", ""),
+            "baseline managed config closure missing",
+            errors,
+        )
     runtime_launch = contract.get("runtime_launch")
     require(isinstance(runtime_launch, dict), "contract runtime_launch missing", errors)
     if isinstance(runtime_launch, dict):
-        require(runtime_launch.get("manager_owned_runtime_env_source") == "cli-tools/nddev_mimocode.py:MIMOCODE_FIXED_RUNTIME_ENV", "runtime env source mismatch", errors)
-        require(runtime_launch.get("manager_owned_runtime_env") == EXPECTED_FIXED_RUNTIME_ENV, "runtime env values mismatch", errors)
-        require("MIMOCODE_DISABLE_PROJECT_CONFIG=1" in runtime_launch.get("project_config_discovery", ""), "project config disable contract missing", errors)
-        require("MIMOCODE_ENABLE_ANALYSIS=0" in runtime_launch.get("external_telemetry", ""), "analysis disable contract missing", errors)
-        require(runtime_launch.get("project_boundary_rejected_paths_source") == "cli-tools/nddev_mimocode.py:PROJECT_BOUNDARY_PATHS", "project boundary source mismatch", errors)
-        require(runtime_launch.get("managed_config_dir_launch_closure_source") == "cli-tools/nddev_mimocode.py:validate_launch_managed_config_boundary", "managed config closure source mismatch", errors)
-        require("unknown files under MIMOCODE_CONFIG_DIR" in runtime_launch.get("managed_config_dir_launch_closure", ""), "managed config closure contract missing", errors)
+        require(
+            runtime_launch.get("manager_owned_runtime_env_source")
+            == "cli-tools/nddev_mimocode.py:MIMOCODE_FIXED_RUNTIME_ENV",
+            "runtime env source mismatch",
+            errors,
+        )
+        require(
+            runtime_launch.get("manager_owned_runtime_env") == EXPECTED_FIXED_RUNTIME_ENV,
+            "runtime env values mismatch",
+            errors,
+        )
+        require(
+            "MIMOCODE_DISABLE_PROJECT_CONFIG=1"
+            in runtime_launch.get("project_config_discovery", ""),
+            "project config disable contract missing",
+            errors,
+        )
+        require(
+            "MIMOCODE_ENABLE_ANALYSIS=0" in runtime_launch.get("external_telemetry", ""),
+            "analysis disable contract missing",
+            errors,
+        )
+        require(
+            runtime_launch.get("project_boundary_rejected_paths_source")
+            == "cli-tools/nddev_mimocode.py:PROJECT_BOUNDARY_PATHS",
+            "project boundary source mismatch",
+            errors,
+        )
+        require(
+            runtime_launch.get("managed_config_dir_launch_closure_source")
+            == "cli-tools/nddev_mimocode.py:validate_launch_managed_config_boundary",
+            "managed config closure source mismatch",
+            errors,
+        )
+        require(
+            "unknown files under MIMOCODE_CONFIG_DIR"
+            in runtime_launch.get("managed_config_dir_launch_closure", ""),
+            "managed config closure contract missing",
+            errors,
+        )
     transaction = contract.get("transaction_policy")
     require(isinstance(transaction, dict), "contract transaction_policy missing", errors)
     if isinstance(transaction, dict):
-        require(transaction.get("legacy_migrate_preserves_unmanaged_config_keys") is True, "legacy migrate preservation contract missing", errors)
-        require(transaction.get("durable_write_order") == ["stage", "fchmod", "file-fsync", "replace", "parent-fsync"], "durable write order contract mismatch", errors)
-        require(transaction.get("exact_postconditions") is True, "exact postcondition contract missing", errors)
-        require("lexical absolute-target validation" in transaction.get("pre_lock_target_observation", ""), "pre-lock target observation contract missing", errors)
-        require("global.lock" in transaction.get("lock", ""), "product global lock contract missing", errors)
-        require("read-only inspection uses existing canonical bootstrap" in transaction.get("lock", ""), "read-only external lock contract missing", errors)
-        require("mutating commands atomically publish" in transaction.get("lock", ""), "mutating external lock contract missing", errors)
-        require("no-replace" in transaction.get("lock", ""), "anchor no-replace publication contract missing", errors)
-        require(transaction.get("product_coordination_lock") == "persistent-product-global-lock-file", "product coordination lock contract mismatch", errors)
-        require("cold no-anchor read" in transaction.get("read_only_cold_exception", ""), "cold read exception contract missing", errors)
-        require("final-path publication commit point" in transaction.get("published_anchor_rollback_exception", ""), "published anchor commit point missing", errors)
-        require("monotonic rendezvous" in transaction.get("published_anchor_rollback_exception", ""), "published anchor rollback exception missing", errors)
-        require("same-dev-inode" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias recovery contract missing", errors)
-        require("mutating openers" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias mutator-only recovery contract missing", errors)
-        require("read-only shared openers fail closed without recovery" in transaction.get("hardlink_publication_alias_recovery", ""), "read-only alias fail-closed contract missing", errors)
-        require("unknown or multiple hardlinks fail closed" in transaction.get("hardlink_publication_alias_recovery", ""), "hardlink alias fail-closed contract missing", errors)
-        require("absent targets do not create target-specific" in str(transaction.get("external_lock_persistent", "")), "command-accurate external lock persistence contract missing", errors)
-        require("read-only inspection commands do not create" in str(transaction.get("internal_lock_persistent", "")), "read-only internal lock contract missing", errors)
+        require(
+            transaction.get("legacy_migrate_preserves_unmanaged_config_keys") is True,
+            "legacy migrate preservation contract missing",
+            errors,
+        )
+        require(
+            transaction.get("durable_write_order")
+            == ["stage", "fchmod", "file-fsync", "replace", "parent-fsync"],
+            "durable write order contract mismatch",
+            errors,
+        )
+        require(
+            transaction.get("exact_postconditions") is True,
+            "exact postcondition contract missing",
+            errors,
+        )
+        require(
+            "lexical absolute-target validation"
+            in transaction.get("pre_lock_target_observation", ""),
+            "pre-lock target observation contract missing",
+            errors,
+        )
+        require(
+            "global.lock" in transaction.get("lock", ""),
+            "product global lock contract missing",
+            errors,
+        )
+        require(
+            "read-only inspection uses existing canonical bootstrap" in transaction.get("lock", ""),
+            "read-only external lock contract missing",
+            errors,
+        )
+        require(
+            "mutating commands atomically publish" in transaction.get("lock", ""),
+            "mutating external lock contract missing",
+            errors,
+        )
+        require(
+            "no-replace" in transaction.get("lock", ""),
+            "anchor no-replace publication contract missing",
+            errors,
+        )
+        require(
+            transaction.get("product_coordination_lock") == "persistent-product-global-lock-file",
+            "product coordination lock contract mismatch",
+            errors,
+        )
+        require(
+            "cold no-anchor read" in transaction.get("read_only_cold_exception", ""),
+            "cold read exception contract missing",
+            errors,
+        )
+        require(
+            "final-path publication commit point"
+            in transaction.get("published_anchor_rollback_exception", ""),
+            "published anchor commit point missing",
+            errors,
+        )
+        require(
+            "monotonic rendezvous" in transaction.get("published_anchor_rollback_exception", ""),
+            "published anchor rollback exception missing",
+            errors,
+        )
+        require(
+            "same-dev-inode" in transaction.get("hardlink_publication_alias_recovery", ""),
+            "hardlink alias recovery contract missing",
+            errors,
+        )
+        require(
+            "mutating openers" in transaction.get("hardlink_publication_alias_recovery", ""),
+            "hardlink alias mutator-only recovery contract missing",
+            errors,
+        )
+        require(
+            "read-only shared openers fail closed without recovery"
+            in transaction.get("hardlink_publication_alias_recovery", ""),
+            "read-only alias fail-closed contract missing",
+            errors,
+        )
+        require(
+            "unknown or multiple hardlinks fail closed"
+            in transaction.get("hardlink_publication_alias_recovery", ""),
+            "hardlink alias fail-closed contract missing",
+            errors,
+        )
+        require(
+            "absent targets do not create target-specific"
+            in str(transaction.get("external_lock_persistent", "")),
+            "command-accurate external lock persistence contract missing",
+            errors,
+        )
+        require(
+            "read-only inspection commands do not create"
+            in str(transaction.get("internal_lock_persistent", "")),
+            "read-only internal lock contract missing",
+            errors,
+        )
         require(
             transaction.get("lock_order")
             == [
@@ -462,22 +780,93 @@ def validate_versions(errors: list[str]) -> None:
             "transaction lock order contract mismatch",
             errors,
         )
-        require("inode identity" in transaction.get("rollback_exact_object_graph", ""), "exact object graph contract missing inode identity", errors)
-        require("rename-held undo" in transaction.get("rollback_strategy", ""), "rollback strategy contract mismatch", errors)
-        require("final-path no-replace publication" in transaction.get("rollback_strategy", ""), "cleanup journal commit boundary missing", errors)
         require(
-            ".nddev-mimocode-cleanup/NDDEV-MIMOCODE-CLEANUP.json" in transaction.get("postcommit_cleanup_journal", ""),
+            "inode identity" in transaction.get("rollback_exact_object_graph", ""),
+            "exact object graph contract missing inode identity",
+            errors,
+        )
+        require(
+            "rename-held undo" in transaction.get("rollback_strategy", ""),
+            "rollback strategy contract mismatch",
+            errors,
+        )
+        require(
+            "final-path no-replace publication" in transaction.get("rollback_strategy", ""),
+            "cleanup journal commit boundary missing",
+            errors,
+        )
+        require(
+            ".nddev-mimocode-recovery/NDDEV-MIMOCODE-RECOVERY."
+            in transaction.get("precommit_recovery_intent", ""),
+            "precommit recovery intent path contract missing",
+            errors,
+        )
+        require(
+            "before every visible" in transaction.get("precommit_recovery_intent", ""),
+            "precommit recovery ordering contract missing",
+            errors,
+        )
+        require(
+            "exact object graph records" in transaction.get("precommit_recovery_intent", ""),
+            "precommit recovery graph contract missing",
+            errors,
+        )
+        require(
+            transaction.get("precommit_recovery_publish_order")
+            == [
+                "complete intent file-fsync",
+                "atomic no-replace final-path publication",
+                "recovery parent-fsync",
+                "visible source move",
+            ],
+            "precommit recovery publish order mismatch",
+            errors,
+        )
+        require(
+            "read-only commands fail closed without recovery"
+            in transaction.get("precommit_recovery_read_only", ""),
+            "precommit recovery read-only contract missing",
+            errors,
+        )
+        require(
+            "exclusive target coordination" in transaction.get("precommit_recovery_read_only", ""),
+            "precommit recovery mutator contract missing",
+            errors,
+        )
+        require(
+            transaction.get("precommit_recovery_intent_max_bytes")
+            == nddev_mimocode.PRECOMMIT_RECOVERY_INTENT_MAX_BYTES,
+            "precommit recovery intent byte bound mismatch",
+            errors,
+        )
+        require(
+            ".nddev-mimocode-cleanup/NDDEV-MIMOCODE-CLEANUP.json"
+            in transaction.get("postcommit_cleanup_journal", ""),
             "postcommit cleanup journal path contract missing",
             errors,
         )
         require(
-            transaction.get("postcommit_cleanup_journal_max_bytes") == nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES,
+            transaction.get("postcommit_cleanup_journal_max_bytes")
+            == nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES,
             "postcommit cleanup journal byte bound mismatch",
             errors,
         )
-        require("no-replace journal" in transaction.get("postcommit_cleanup_journal", ""), "postcommit cleanup no-replace contract missing", errors)
-        require("bounded relative tombstones" in transaction.get("postcommit_cleanup_journal", ""), "postcommit cleanup tombstone bounds missing", errors)
-        require("read-only commands validate and report only" in transaction.get("postcommit_cleanup_journal", ""), "read-only cleanup contract missing", errors)
+        require(
+            "no-replace journal" in transaction.get("postcommit_cleanup_journal", ""),
+            "postcommit cleanup no-replace contract missing",
+            errors,
+        )
+        require(
+            "bounded relative tombstones" in transaction.get("postcommit_cleanup_journal", ""),
+            "postcommit cleanup tombstone bounds missing",
+            errors,
+        )
+        require(
+            "read-only commands validate and report only"
+            in transaction.get("postcommit_cleanup_journal", ""),
+            "read-only cleanup contract missing",
+            errors,
+        )
         require(
             transaction.get("postcommit_cleanup_publish_order")
             == [
@@ -491,50 +880,228 @@ def validate_versions(errors: list[str]) -> None:
             "postcommit cleanup publish order mismatch",
             errors,
         )
-        require("top-level cleanup_pending true" in transaction.get("cleanup_pending_result", ""), "cleanup_pending result contract missing", errors)
-        require("bounded non-path cleanup_pending_entries" in transaction.get("cleanup_pending_result", ""), "cleanup_pending metadata bound missing", errors)
-        require("exits rc 2 without mutation" in transaction.get("cleanup_pending_result", ""), "malformed cleanup fail-closed contract missing", errors)
-        require(transaction.get("restore_removes_known_managed_paths_absent_from_backup") is True, "restore deletion contract missing", errors)
-        require(transaction.get("restore_unknown_backup_paths") == "fail-closed", "restore unknown-path contract mismatch", errors)
-        require(transaction.get("backup_file_records") == "path-size-sha256", "backup file record contract mismatch", errors)
-        require("empty extra directories" in transaction.get("backup_physical_topology", ""), "backup topology contract missing", errors)
-        require("immutable postcommit cleanup journal" in transaction.get("backup_cleanup_postcondition", ""), "backup cleanup journal contract missing", errors)
-        require("cleanup_pending" in transaction.get("backup_cleanup_postcondition", ""), "backup cleanup pending contract missing", errors)
-        require(transaction.get("same_uid_recomputed_payload_digest_tamper_machine_capability") is False, "same-UID tamper capability must be false", errors)
-        require(transaction.get("setup_update_command") == "update", "setup update command contract missing", errors)
-        require("update-cli" in transaction.get("setup_update_scope", ""), "setup update/software update separation missing", errors)
-        require("true no-op" in transaction.get("setup_update_noop", ""), "setup update no-op contract missing", errors)
-        require("no cleanup_pending" in transaction.get("setup_update_noop", ""), "setup update cleanup-pending no-op boundary missing", errors)
-        require("only when update changes" in transaction.get("setup_update_backup", ""), "setup update backup contract missing", errors)
-        require("exact desired managed bytes" in transaction.get("setup_update_postcondition", ""), "setup update postcondition contract missing", errors)
+        require(
+            "top-level cleanup_pending true" in transaction.get("cleanup_pending_result", ""),
+            "cleanup_pending result contract missing",
+            errors,
+        )
+        require(
+            "bounded non-path cleanup_pending_entries"
+            in transaction.get("cleanup_pending_result", ""),
+            "cleanup_pending metadata bound missing",
+            errors,
+        )
+        require(
+            "exits rc 2 without mutation" in transaction.get("cleanup_pending_result", ""),
+            "malformed cleanup fail-closed contract missing",
+            errors,
+        )
+        require(
+            transaction.get("restore_removes_known_managed_paths_absent_from_backup") is True,
+            "restore deletion contract missing",
+            errors,
+        )
+        require(
+            transaction.get("restore_unknown_backup_paths") == "fail-closed",
+            "restore unknown-path contract mismatch",
+            errors,
+        )
+        require(
+            transaction.get("backup_file_records") == "path-size-sha256",
+            "backup file record contract mismatch",
+            errors,
+        )
+        require(
+            "empty extra directories" in transaction.get("backup_physical_topology", ""),
+            "backup topology contract missing",
+            errors,
+        )
+        require(
+            "immutable postcommit cleanup journal"
+            in transaction.get("backup_cleanup_postcondition", ""),
+            "backup cleanup journal contract missing",
+            errors,
+        )
+        require(
+            "cleanup_pending" in transaction.get("backup_cleanup_postcondition", ""),
+            "backup cleanup pending contract missing",
+            errors,
+        )
+        require(
+            transaction.get("same_uid_recomputed_payload_digest_tamper_machine_capability")
+            is False,
+            "same-UID tamper capability must be false",
+            errors,
+        )
+        require(
+            transaction.get("setup_update_command") == "update",
+            "setup update command contract missing",
+            errors,
+        )
+        require(
+            "update-cli" in transaction.get("setup_update_scope", ""),
+            "setup update/software update separation missing",
+            errors,
+        )
+        require(
+            "true no-op" in transaction.get("setup_update_noop", ""),
+            "setup update no-op contract missing",
+            errors,
+        )
+        require(
+            "no cleanup_pending" in transaction.get("setup_update_noop", ""),
+            "setup update cleanup-pending no-op boundary missing",
+            errors,
+        )
+        require(
+            "only when update changes" in transaction.get("setup_update_backup", ""),
+            "setup update backup contract missing",
+            errors,
+        )
+        require(
+            "exact desired managed bytes" in transaction.get("setup_update_postcondition", ""),
+            "setup update postcondition contract missing",
+            errors,
+        )
     software = contract.get("software_install")
     require(isinstance(software, dict), "contract software_install missing", errors)
     if isinstance(software, dict):
-        require(software.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT, "contract release page asset count mismatch", errors)
-        require(software.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS, "contract generated source downloads mismatch", errors)
-        require(software.get("observed_uploaded_runtime_asset_ids") == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "contract observed runtime asset ids mismatch", errors)
-        require(software.get("supported_product_host_ids") == SUPPORTED_PRODUCT_HOST_IDS, "contract product host ids mismatch", errors)
-        require(software.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS, "contract rejected host ids mismatch", errors)
-        require(software.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION, "contract product host asset selection mismatch", errors)
-        require(software.get("platform_selection_source") == "cli-tools/nddev_mimocode.py:detect_platform_selection", "contract platform source mismatch", errors)
-        require(software.get("ubuntu_version_floor") is None, "contract must not invent an Ubuntu version floor", errors)
-        require("upstream publishes no official floor" in software.get("linux_product_scope", ""), "contract must describe no official Ubuntu floor", errors)
-        require(software.get("staged_probe_environment_source") == "cli-tools/nddev_mimocode.py:minimal_process_env", "staged probe env source mismatch", errors)
-        require("MIMOCODE_ENABLE_ANALYSIS=0" in software.get("staged_probe_telemetry", ""), "staged probe telemetry contract missing", errors)
-    require(nddev_mimocode.MIMOCODE_FIXED_RUNTIME_ENV == EXPECTED_FIXED_RUNTIME_ENV, "manager fixed runtime env mismatch", errors)
-    require(nddev_mimocode.POSTCOMMIT_CLEANUP_DIRECTORY_NAME == ".nddev-mimocode-cleanup", "manager cleanup directory constant mismatch", errors)
-    require(nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_NAME == "NDDEV-MIMOCODE-CLEANUP.json", "manager cleanup journal constant mismatch", errors)
-    require(nddev_mimocode.POSTCOMMIT_CLEANUP_MAX_ENTRIES == 8, "manager cleanup entry bound mismatch", errors)
-    require(nddev_mimocode.POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS <= 4096, "manager cleanup tree bound mismatch", errors)
-    require(nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES == 4 * 1024 * 1024, "manager cleanup journal byte bound mismatch", errors)
-    require([str(path) for path in nddev_mimocode.PROJECT_BOUNDARY_PATHS] == EXPECTED_PROJECT_BOUNDARY_PATHS, "manager project boundary paths mismatch", errors)
-    require(list(nddev_mimocode.OBSERVED_UPLOADED_RUNTIME_ASSET_IDS) == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS, "manager observed runtime asset ids mismatch", errors)
-    require(nddev_mimocode.RELEASE_PAGE_ASSET_COUNT == RELEASE_PAGE_ASSET_COUNT, "manager release page asset count mismatch", errors)
-    require(list(nddev_mimocode.GENERATED_SOURCE_DOWNLOADS) == GENERATED_SOURCE_DOWNLOADS, "manager generated source downloads mismatch", errors)
-    require(list(nddev_mimocode.SUPPORTED_PRODUCT_HOST_IDS) == SUPPORTED_PRODUCT_HOST_IDS, "manager product host ids mismatch", errors)
-    require(list(nddev_mimocode.REJECTED_PRODUCT_HOST_IDS) == REJECTED_PRODUCT_HOST_IDS, "manager rejected host ids mismatch", errors)
+        require(
+            software.get("github_release_page_asset_count") == RELEASE_PAGE_ASSET_COUNT,
+            "contract release page asset count mismatch",
+            errors,
+        )
+        require(
+            software.get("generated_source_downloads") == GENERATED_SOURCE_DOWNLOADS,
+            "contract generated source downloads mismatch",
+            errors,
+        )
+        require(
+            software.get("observed_uploaded_runtime_asset_ids")
+            == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS,
+            "contract observed runtime asset ids mismatch",
+            errors,
+        )
+        require(
+            software.get("supported_product_host_ids") == SUPPORTED_PRODUCT_HOST_IDS,
+            "contract product host ids mismatch",
+            errors,
+        )
+        require(
+            software.get("rejected_product_host_ids") == REJECTED_PRODUCT_HOST_IDS,
+            "contract rejected host ids mismatch",
+            errors,
+        )
+        require(
+            software.get("product_host_asset_selection") == PRODUCT_HOST_ASSET_SELECTION,
+            "contract product host asset selection mismatch",
+            errors,
+        )
+        require(
+            software.get("platform_selection_source")
+            == "cli-tools/nddev_mimocode.py:detect_platform_selection",
+            "contract platform source mismatch",
+            errors,
+        )
+        require(
+            software.get("ubuntu_version_floor") is None,
+            "contract must not invent an Ubuntu version floor",
+            errors,
+        )
+        require(
+            "upstream publishes no official floor" in software.get("linux_product_scope", ""),
+            "contract must describe no official Ubuntu floor",
+            errors,
+        )
+        require(
+            software.get("staged_probe_environment_source")
+            == "cli-tools/nddev_mimocode.py:minimal_process_env",
+            "staged probe env source mismatch",
+            errors,
+        )
+        require(
+            "MIMOCODE_ENABLE_ANALYSIS=0" in software.get("staged_probe_telemetry", ""),
+            "staged probe telemetry contract missing",
+            errors,
+        )
+    require(
+        nddev_mimocode.MIMOCODE_FIXED_RUNTIME_ENV == EXPECTED_FIXED_RUNTIME_ENV,
+        "manager fixed runtime env mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.POSTCOMMIT_CLEANUP_DIRECTORY_NAME == ".nddev-mimocode-cleanup",
+        "manager cleanup directory constant mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_NAME == "NDDEV-MIMOCODE-CLEANUP.json",
+        "manager cleanup journal constant mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.POSTCOMMIT_CLEANUP_MAX_ENTRIES == 8,
+        "manager cleanup entry bound mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS <= 4096,
+        "manager cleanup tree bound mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES == 4 * 1024 * 1024,
+        "manager cleanup journal byte bound mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.PRECOMMIT_RECOVERY_DIRECTORY_NAME == ".nddev-mimocode-recovery",
+        "manager recovery directory constant mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.PRECOMMIT_RECOVERY_INTENT_MAX_BYTES == 4 * 1024 * 1024,
+        "manager recovery intent byte bound mismatch",
+        errors,
+    )
+    require(
+        [str(path) for path in nddev_mimocode.PROJECT_BOUNDARY_PATHS]
+        == EXPECTED_PROJECT_BOUNDARY_PATHS,
+        "manager project boundary paths mismatch",
+        errors,
+    )
+    require(
+        list(nddev_mimocode.OBSERVED_UPLOADED_RUNTIME_ASSET_IDS)
+        == OBSERVED_UPLOADED_RUNTIME_ASSET_IDS,
+        "manager observed runtime asset ids mismatch",
+        errors,
+    )
+    require(
+        nddev_mimocode.RELEASE_PAGE_ASSET_COUNT == RELEASE_PAGE_ASSET_COUNT,
+        "manager release page asset count mismatch",
+        errors,
+    )
+    require(
+        list(nddev_mimocode.GENERATED_SOURCE_DOWNLOADS) == GENERATED_SOURCE_DOWNLOADS,
+        "manager generated source downloads mismatch",
+        errors,
+    )
+    require(
+        list(nddev_mimocode.SUPPORTED_PRODUCT_HOST_IDS) == SUPPORTED_PRODUCT_HOST_IDS,
+        "manager product host ids mismatch",
+        errors,
+    )
+    require(
+        list(nddev_mimocode.REJECTED_PRODUCT_HOST_IDS) == REJECTED_PRODUCT_HOST_IDS,
+        "manager rejected host ids mismatch",
+        errors,
+    )
     for name in EXPECTED_FIXED_RUNTIME_ENV:
-        require(name in nddev_mimocode.BLOCKED_MANAGER_ENV_NAMES, f"manager env override not blocked: {name}", errors)
+        require(
+            name in nddev_mimocode.BLOCKED_MANAGER_ENV_NAMES,
+            f"manager env override not blocked: {name}",
+            errors,
+        )
     command_policy = contract.get("command_policy")
     require(isinstance(command_policy, dict), "contract command_policy missing", errors)
     if isinstance(command_policy, dict):
@@ -550,7 +1117,11 @@ def validate_versions(errors: list[str]) -> None:
             "target preflight order contract mismatch",
             errors,
         )
-        require("JSON stdout" in command_policy.get("json_argparse_errors", ""), "JSON argparse boundary contract missing", errors)
+        require(
+            "JSON stdout" in command_policy.get("json_argparse_errors", ""),
+            "JSON argparse boundary contract missing",
+            errors,
+        )
 
 
 def validate_assets(errors: list[str]) -> None:
@@ -567,22 +1138,50 @@ def validate_assets(errors: list[str]) -> None:
         if not isinstance(asset, dict):
             continue
         require(isinstance(asset.get("name"), str), f"asset name missing: {key}", errors)
-        require(isinstance(asset.get("size"), int) and asset["size"] > 0, f"asset size invalid: {key}", errors)
-        require(re.fullmatch(r"[0-9a-f]{64}", str(asset.get("sha256", ""))) is not None, f"asset SHA invalid: {key}", errors)
+        require(
+            isinstance(asset.get("size"), int) and asset["size"] > 0,
+            f"asset size invalid: {key}",
+            errors,
+        )
+        require(
+            re.fullmatch(r"[0-9a-f]{64}", str(asset.get("sha256", ""))) is not None,
+            f"asset SHA invalid: {key}",
+            errors,
+        )
         require(str(asset.get("url", "")).startswith(prefix), f"asset URL mismatch: {key}", errors)
         if key in {"linux-arm64", "linux-x64", "linux-x64-baseline"}:
-            require("-musl" not in asset["name"], f"Ubuntu-selected asset must not use musl archive: {key}", errors)
+            require(
+                "-musl" not in asset["name"],
+                f"Ubuntu-selected asset must not use musl archive: {key}",
+                errors,
+            )
         if "musl" in key:
             require("-musl" in asset["name"], f"musl observation name mismatch: {key}", errors)
         if key.startswith("windows-"):
-            require(asset["name"].startswith("mimocode-windows-"), f"Windows observation name mismatch: {key}", errors)
+            require(
+                asset["name"].startswith("mimocode-windows-"),
+                f"Windows observation name mismatch: {key}",
+                errors,
+            )
         if key == "darwin-arm64":
             executable = asset.get("executable")
-            require(isinstance(executable, dict), "darwin-arm64 executable metadata missing", errors)
+            require(
+                isinstance(executable, dict), "darwin-arm64 executable metadata missing", errors
+            )
             if isinstance(executable, dict):
-                require(executable.get("path") == nddev_mimocode.COMMAND_NAME, "executable path mismatch", errors)
-                require(executable.get("installer_mode") == "0755", "installer mode mismatch", errors)
-                require(re.fullmatch(r"[0-9a-f]{64}", str(executable.get("sha256", ""))) is not None, "executable SHA invalid", errors)
+                require(
+                    executable.get("path") == nddev_mimocode.COMMAND_NAME,
+                    "executable path mismatch",
+                    errors,
+                )
+                require(
+                    executable.get("installer_mode") == "0755", "installer mode mismatch", errors
+                )
+                require(
+                    re.fullmatch(r"[0-9a-f]{64}", str(executable.get("sha256", ""))) is not None,
+                    "executable SHA invalid",
+                    errors,
+                )
 
 
 def injected_host(
@@ -615,8 +1214,18 @@ def validate_platform_selection(errors: list[str]) -> None:
     success_cases = [
         ("macos arm64", injected_host("darwin", "arm64"), "darwin-arm64", "macos-arm64"),
         ("macos x64 avx2", injected_host("darwin", "x86_64", avx2=True), "darwin-x64", "macos-x64"),
-        ("macos x64 baseline", injected_host("darwin", "x86_64", avx2=False), "darwin-x64-baseline", "macos-x64"),
-        ("macos translated arm64", injected_host("darwin", "x86_64", avx2=True, darwin_translated=True), "darwin-arm64", "macos-arm64"),
+        (
+            "macos x64 baseline",
+            injected_host("darwin", "x86_64", avx2=False),
+            "darwin-x64-baseline",
+            "macos-x64",
+        ),
+        (
+            "macos translated arm64",
+            injected_host("darwin", "x86_64", avx2=True, darwin_translated=True),
+            "darwin-arm64",
+            "macos-arm64",
+        ),
         (
             "ubuntu desktop arm64",
             injected_host("linux", "aarch64", libc="glibc", os_id="ubuntu"),
@@ -631,7 +1240,9 @@ def validate_platform_selection(errors: list[str]) -> None:
         ),
         (
             "ubuntu server x64 baseline",
-            injected_host("linux", "x86_64", libc="glibc", os_id="ubuntu", variant_id="server", avx2=False),
+            injected_host(
+                "linux", "x86_64", libc="glibc", os_id="ubuntu", variant_id="server", avx2=False
+            ),
             "linux-x64-baseline",
             "ubuntu-glibc-x64",
         ),
@@ -644,10 +1255,20 @@ def validate_platform_selection(errors: list[str]) -> None:
     ]
     for label, host, expected_asset, expected_product_host in success_cases:
         selection = nddev_mimocode.detect_platform_selection(host)
-        require(selection.get("asset_key") == expected_asset, f"{label} selected wrong asset", errors)
-        require(selection.get("product_host_id") == expected_product_host, f"{label} selected wrong product host", errors)
+        require(
+            selection.get("asset_key") == expected_asset, f"{label} selected wrong asset", errors
+        )
+        require(
+            selection.get("product_host_id") == expected_product_host,
+            f"{label} selected wrong product host",
+            errors,
+        )
         asset_key, asset = nddev_mimocode.detect_platform_asset(host)
-        require(asset_key == expected_asset and isinstance(asset, dict), f"{label} asset lookup failed", errors)
+        require(
+            asset_key == expected_asset and isinstance(asset, dict),
+            f"{label} asset lookup failed",
+            errors,
+        )
 
     reject_cases = [
         ("debian glibc", injected_host("linux", "x86_64", libc="glibc", os_id="debian", avx2=True)),
@@ -711,7 +1332,11 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         except json.JSONDecodeError:
             errors.append(f"argparse JSON boundary wrote invalid JSON: {argv}")
             continue
-        require(payload.get("ok") is False and isinstance(payload.get("error"), str), f"argparse JSON error payload mismatch: {argv}", errors)
+        require(
+            payload.get("ok") is False and isinstance(payload.get("error"), str),
+            f"argparse JSON error payload mismatch: {argv}",
+            errors,
+        )
 
     original_host = nddev_mimocode.require_supported_product_host
     original_target = nddev_mimocode.require_absolute_target_argument
@@ -737,7 +1362,11 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
             require(rc == 2, f"{command} unsupported host rc mismatch", errors)
             require(stderr == "", f"{command} unsupported host JSON wrote stderr", errors)
             payload = json.loads(stdout)
-            require(payload.get("error") == "forced unsupported host", f"{command} did not fail at host preflight", errors)
+            require(
+                payload.get("error") == "forced unsupported host",
+                f"{command} did not fail at host preflight",
+                errors,
+            )
     finally:
         nddev_mimocode.require_supported_product_host = original_host
         nddev_mimocode.require_absolute_target_argument = original_target
@@ -801,10 +1430,16 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
                 target.mkdir(mode=0o700)
                 target.chmod(0o700)
                 traced_target_path["value"] = str(target.parent.resolve() / target.name)
-                rc, stdout, stderr = run_main_captured(["status", "--target", str(target), "--json"])
+                rc, stdout, stderr = run_main_captured(
+                    ["status", "--target", str(target), "--json"]
+                )
                 require(rc == 0, "status preflight trace command failed", errors)
                 require(stderr == "", "status preflight trace wrote stderr", errors)
-                require(json.loads(stdout).get("state") == "unmanaged", "status preflight trace payload mismatch", errors)
+                require(
+                    json.loads(stdout).get("state") == "unmanaged",
+                    "status preflight trace payload mismatch",
+                    errors,
+                )
                 status_trace = list(trace)
                 require(
                     status_trace[:3] == ["host", "lexical-target", "target-fs-canonicalization"]
@@ -816,24 +1451,53 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
                 for command in ("install-cli", "update-cli"):
                     trace.clear()
                     command_target = Path(raw) / command
-                    traced_target_path["value"] = str(command_target.parent.resolve() / command_target.name)
-                    rc, stdout, stderr = run_main_captured([command, "--target", str(command_target), "--json"])
-                    require(rc == 2, f"{command} preflight trace command should fail before live work", errors)
+                    traced_target_path["value"] = str(
+                        command_target.parent.resolve() / command_target.name
+                    )
+                    rc, stdout, stderr = run_main_captured(
+                        [command, "--target", str(command_target), "--json"]
+                    )
+                    require(
+                        rc == 2,
+                        f"{command} preflight trace command should fail before live work",
+                        errors,
+                    )
                     require(stderr == "", f"{command} preflight trace wrote stderr", errors)
                     payload = json.loads(stdout)
                     if command == "install-cli":
-                        require(payload.get("error") == "forced stop before network", "install-cli did not stop at stubbed network boundary", errors)
+                        require(
+                            payload.get("error") == "forced stop before network",
+                            "install-cli did not stop at stubbed network boundary",
+                            errors,
+                        )
                     else:
-                        require("requires existing" in payload.get("error", ""), "update-cli absent target error mismatch", errors)
-                    require(not original_path_present(command_target), f"{command} left a newly created target after failure", errors)
-                    require(trace[:2] == ["host", "lexical-target"], f"{command} preflight order mismatch: {trace}", errors)
+                        require(
+                            "requires existing" in payload.get("error", ""),
+                            "update-cli absent target error mismatch",
+                            errors,
+                        )
+                    require(
+                        not original_path_present(command_target),
+                        f"{command} left a newly created target after failure",
+                        errors,
+                    )
+                    require(
+                        trace[:2] == ["host", "lexical-target"],
+                        f"{command} preflight order mismatch: {trace}",
+                        errors,
+                    )
                     require(
                         "product-lock-acquire" in trace
-                        and trace.index("product-lock-acquire") < trace.index("target-fs-canonicalization"),
+                        and trace.index("product-lock-acquire")
+                        < trace.index("target-fs-canonicalization"),
                         f"{command} did not coordinate before canonicalization: {trace}",
                         errors,
                     )
-                    external_index = trace.index("external-lock-acquire") if "external-lock-acquire" in trace else trace.index("product-lock-acquire")
+                    external_index = (
+                        trace.index("external-lock-acquire")
+                        if "external-lock-acquire" in trace
+                        else trace.index("product-lock-acquire")
+                    )
                     require(
                         "target-path-present" in trace
                         and trace.index("target-path-present") > external_index,
@@ -841,7 +1505,8 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
                         errors,
                     )
                     require(
-                        trace.index("target-path-present") > trace.index("target-fs-canonicalization"),
+                        trace.index("target-path-present")
+                        > trace.index("target-fs-canonicalization"),
                         f"{command} observed target before coordinated canonicalization: {trace}",
                         errors,
                     )
@@ -854,8 +1519,17 @@ def validate_cli_json_and_preflight_boundary(errors: list[str]) -> None:
         nddev_mimocode.inspect_target = original_inspect
         nddev_mimocode.path_present = original_path_present
         nddev_mimocode.selected_asset = original_selected_asset
-    require(trace[:3] == ["host", "lexical-target", "target-fs-canonicalization"], f"cold read-only preflight order mismatch: {trace}", errors)
-    require("status-read" in trace and trace.index("status-read") > trace.index("target-fs-canonicalization"), "status read occurred before external lock canonicalization", errors)
+    require(
+        trace[:3] == ["host", "lexical-target", "target-fs-canonicalization"],
+        f"cold read-only preflight order mismatch: {trace}",
+        errors,
+    )
+    require(
+        "status-read" in trace
+        and trace.index("status-read") > trace.index("target-fs-canonicalization"),
+        "status read occurred before external lock canonicalization",
+        errors,
+    )
 
 
 def validate_setup_profiles(errors: list[str]) -> None:
@@ -863,42 +1537,96 @@ def validate_setup_profiles(errors: list[str]) -> None:
     contract = read_json("config/nddev-contract.json")
     require(manifest.get("setup_ids") == SETUP_IDS, "manifest setup ids mismatch", errors)
     require(manifest.get("profile_ids") == PROFILE_IDS, "manifest profile ids mismatch", errors)
-    require(manifest.get("setup_lifecycle") == SETUP_LIFECYCLE, "manifest setup lifecycle mismatch", errors)
+    require(
+        manifest.get("setup_lifecycle") == SETUP_LIFECYCLE,
+        "manifest setup lifecycle mismatch",
+        errors,
+    )
     setup_system = contract.get("setup_system")
     require(isinstance(setup_system, dict), "contract setup_system missing", errors)
     if isinstance(setup_system, dict):
         require(setup_system.get("setup_ids") == SETUP_IDS, "contract setup ids mismatch", errors)
-        require(setup_system.get("profile_ids") == PROFILE_IDS, "contract profile ids mismatch", errors)
-        require(setup_system.get("default_profile_id") == nddev_mimocode.DEFAULT_PROFILE_ID, "default profile mismatch", errors)
-        require(setup_system.get("lifecycle") == FULL_LIFECYCLE, "contract setup lifecycle mismatch", errors)
+        require(
+            setup_system.get("profile_ids") == PROFILE_IDS, "contract profile ids mismatch", errors
+        )
+        require(
+            setup_system.get("default_profile_id") == nddev_mimocode.DEFAULT_PROFILE_ID,
+            "default profile mismatch",
+            errors,
+        )
+        require(
+            setup_system.get("lifecycle") == FULL_LIFECYCLE,
+            "contract setup lifecycle mismatch",
+            errors,
+        )
     command_policy = contract.get("command_policy")
     require(isinstance(command_policy, dict), "contract command_policy missing", errors)
     if isinstance(command_policy, dict):
-        require(command_policy.get("json_supported") == JSON_COMMANDS, "command JSON support mismatch", errors)
-        require(command_policy.get("target_required") == TARGET_COMMANDS, "target command list mismatch", errors)
-    update_args = nddev_mimocode.parse_args(["update", "--target", "/tmp/nddev-mimocode-target", "--json"])
+        require(
+            command_policy.get("json_supported") == JSON_COMMANDS,
+            "command JSON support mismatch",
+            errors,
+        )
+        require(
+            command_policy.get("target_required") == TARGET_COMMANDS,
+            "target command list mismatch",
+            errors,
+        )
+    update_args = nddev_mimocode.parse_args(
+        ["update", "--target", "/tmp/nddev-mimocode-target", "--json"]
+    )
     require(update_args.command == "update", "update parser command mismatch", errors)
-    require(not hasattr(update_args, "setup") and not hasattr(update_args, "profile"), "setup update must not accept setup/profile arguments", errors)
+    require(
+        not hasattr(update_args, "setup") and not hasattr(update_args, "profile"),
+        "setup update must not accept setup/profile arguments",
+        errors,
+    )
     listed = nddev_mimocode.list_setups()
     profiles = nddev_mimocode.list_profiles()
     require([item["id"] for item in listed] == SETUP_IDS, "manager setup list mismatch", errors)
-    require([item["id"] for item in profiles] == PROFILE_IDS, "manager profile list mismatch", errors)
+    require(
+        [item["id"] for item in profiles] == PROFILE_IDS, "manager profile list mismatch", errors
+    )
     for profile_id in PROFILE_IDS:
         _metadata, desired = nddev_mimocode.render_setup("nddev-builder", profile_id)
         config = json.loads(desired[nddev_mimocode.MIMOCODE_CONFIG_RELATIVE].decode("utf-8"))
-        require(config.get("$schema") == "https://mimo.xiaomi.com/mimocode/config.json", f"{profile_id} schema mismatch", errors)
-        require(config.get("mcp") == {}, f"{profile_id} must not configure live MCP servers", errors)
+        require(
+            config.get("$schema") == "https://mimo.xiaomi.com/mimocode/config.json",
+            f"{profile_id} schema mismatch",
+            errors,
+        )
+        require(
+            config.get("mcp") == {}, f"{profile_id} must not configure live MCP servers", errors
+        )
         require(config.get("plugin") == [], f"{profile_id} must not load default plugins", errors)
         require("tools" not in config, f"{profile_id} must not use deprecated tools config", errors)
         if profile_id == "full-auto":
-            require(config.get("permission") == "allow", "full-auto must use native allow-all", errors)
+            require(
+                config.get("permission") == "allow", "full-auto must use native allow-all", errors
+            )
             stamp = json.loads(desired[Path(nddev_mimocode.STAMP_NAME)].decode("utf-8"))
-            require(set(stamp["launch_env"]).isdisjoint(EXPECTED_FIXED_RUNTIME_ENV), "full-auto launch_env must not override manager-owned runtime env", errors)
-            require("MIMOCODE_MIMO_ONLY" not in stamp["launch_env"], "full-auto must not force MiMo-only", errors)
-            require(stamp["launch_env"].get("MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS") == "1", "full-auto bypass env missing", errors)
+            require(
+                set(stamp["launch_env"]).isdisjoint(EXPECTED_FIXED_RUNTIME_ENV),
+                "full-auto launch_env must not override manager-owned runtime env",
+                errors,
+            )
+            require(
+                "MIMOCODE_MIMO_ONLY" not in stamp["launch_env"],
+                "full-auto must not force MiMo-only",
+                errors,
+            )
+            require(
+                stamp["launch_env"].get("MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS") == "1",
+                "full-auto bypass env missing",
+                errors,
+            )
         else:
-            require(config.get("default_agent") == "plan", "safe profile must use plan agent", errors)
-            require(isinstance(config.get("permission"), dict), "safe permission must be object", errors)
+            require(
+                config.get("default_agent") == "plan", "safe profile must use plan agent", errors
+            )
+            require(
+                isinstance(config.get("permission"), dict), "safe permission must be object", errors
+            )
             stamp = json.loads(desired[Path(nddev_mimocode.STAMP_NAME)].decode("utf-8"))
             require(stamp["launch_env"] == {}, "safe launch_env must be empty", errors)
 
@@ -934,31 +1662,88 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                 for command in ("status", "plan", "software-status"):
                     for label, target in (("real", missing_real), ("alias", missing_alias)):
                         before = len(lock_events)
-                        rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
-                        require(rc == 0, f"{command} {label} missing target failed through symlink parent", errors)
-                        require(stderr == "", f"{command} {label} missing target wrote stderr", errors)
+                        rc, stdout, stderr = run_main_captured(
+                            command_argv(command, target=str(target))
+                        )
+                        require(
+                            rc == 0,
+                            f"{command} {label} missing target failed through symlink parent",
+                            errors,
+                        )
+                        require(
+                            stderr == "", f"{command} {label} missing target wrote stderr", errors
+                        )
                         payload = json.loads(stdout)
                         if command == "status":
-                            require(payload.get("state") == "missing", "missing status state mismatch", errors)
+                            require(
+                                payload.get("state") == "missing",
+                                "missing status state mismatch",
+                                errors,
+                            )
                         elif command == "plan":
-                            require(payload.get("operation") == "install", "missing plan operation mismatch", errors)
-                            require(payload.get("mutates") is False, "missing plan must declare mutates false", errors)
+                            require(
+                                payload.get("operation") == "install",
+                                "missing plan operation mismatch",
+                                errors,
+                            )
+                            require(
+                                payload.get("mutates") is False,
+                                "missing plan must declare mutates false",
+                                errors,
+                            )
                         else:
-                            require(payload.get("present") is False and payload.get("installed") is False, "missing software-status payload mismatch", errors)
-                        require(payload.get("target") == str(canonical_missing), f"{command} {label} did not report canonical missing target", errors)
-                        require(not missing_real.exists(), f"{command} {label} created the canonical missing target", errors)
-                        require(not missing_alias.exists(), f"{command} {label} created the alias missing target", errors)
+                            require(
+                                payload.get("present") is False
+                                and payload.get("installed") is False,
+                                "missing software-status payload mismatch",
+                                errors,
+                            )
+                        require(
+                            payload.get("target") == str(canonical_missing),
+                            f"{command} {label} did not report canonical missing target",
+                            errors,
+                        )
+                        require(
+                            not missing_real.exists(),
+                            f"{command} {label} created the canonical missing target",
+                            errors,
+                        )
+                        require(
+                            not missing_alias.exists(),
+                            f"{command} {label} created the alias missing target",
+                            errors,
+                        )
                         events = lock_events[before:]
                         kinds = [kind for kind, _path in events]
-                        require(kinds.count("product") == 0, f"{command} {label} cold read created/acquired product anchor: {events}", errors)
-                        require(kinds.count("external") == 0, f"{command} {label} created target-specific external lock for absent read: {events}", errors)
-                        require("internal" not in kinds, f"{command} {label} created an internal target lock for an absent read", errors)
-                    require(real_bootstrap_snapshot(bootstrap_product_root(injected)) == before_pool, f"{command} absent read mutated bootstrap lock pool", errors)
+                        require(
+                            kinds.count("product") == 0,
+                            f"{command} {label} cold read created/acquired product anchor: {events}",
+                            errors,
+                        )
+                        require(
+                            kinds.count("external") == 0,
+                            f"{command} {label} created target-specific external lock for absent read: {events}",
+                            errors,
+                        )
+                        require(
+                            "internal" not in kinds,
+                            f"{command} {label} created an internal target lock for an absent read",
+                            errors,
+                        )
+                    require(
+                        real_bootstrap_snapshot(bootstrap_product_root(injected)) == before_pool,
+                        f"{command} absent read mutated bootstrap lock pool",
+                        errors,
+                    )
             finally:
                 nddev_mimocode.acquire_file_lock = original_acquire
 
             with nddev_mimocode.bootstrap_lifecycle_lock(missing_alias) as canonical_target:
-                require(canonical_target == canonical_missing, "held alias lock canonical target mismatch", errors)
+                require(
+                    canonical_target == canonical_missing,
+                    "held alias lock canonical target mismatch",
+                    errors,
+                )
                 child = (
                     "from __future__ import annotations\n"
                     "import importlib.util, pathlib, sys\n"
@@ -975,21 +1760,39 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                 )
                 child_env = {"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"}
                 completed = subprocess.run(
-                    [sys.executable, "-B", "-c", child, str(MANAGER_PATH), str(injected), str(canonical_missing)],
+                    [
+                        sys.executable,
+                        "-B",
+                        "-c",
+                        child,
+                        str(MANAGER_PATH),
+                        str(injected),
+                        str(canonical_missing),
+                    ],
                     env=child_env,
                     text=True,
                     capture_output=True,
                     check=False,
                     timeout=10,
                 )
-                require(completed.returncode == 2, "held alias canonical lock did not block real target status", errors)
-                require(completed.stderr == "", "held alias canonical lock child wrote stderr", errors)
+                require(
+                    completed.returncode == 2,
+                    "held alias canonical lock did not block real target status",
+                    errors,
+                )
+                require(
+                    completed.stderr == "", "held alias canonical lock child wrote stderr", errors
+                )
                 try:
                     payload = json.loads(completed.stdout)
                 except json.JSONDecodeError:
                     errors.append("held alias canonical lock child did not emit JSON")
                 else:
-                    require("target is locked" in payload.get("error", ""), "held alias canonical lock error mismatch", errors)
+                    require(
+                        "target is locked" in payload.get("error", ""),
+                        "held alias canonical lock error mismatch",
+                        errors,
+                    )
 
             nddev_mimocode.acquire_file_lock = traced_acquire
             try:
@@ -998,16 +1801,40 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                     observed_external[command] = {}
                     for label, target in (("real", missing_real), ("alias", missing_alias)):
                         before = len(lock_events)
-                        rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
+                        rc, stdout, stderr = run_main_captured(
+                            command_argv(command, target=str(target))
+                        )
                         require(rc == 0, f"{command} {label} existing marker read failed", errors)
-                        require(stderr == "", f"{command} {label} existing marker read wrote stderr", errors)
+                        require(
+                            stderr == "",
+                            f"{command} {label} existing marker read wrote stderr",
+                            errors,
+                        )
                         events = lock_events[before:]
                         kinds = [kind for kind, _path in events]
-                        require(kinds.count("product") == 1, f"{command} {label} existing marker product lock mismatch: {events}", errors)
-                        require(kinds.count("external") == 1, f"{command} {label} existing marker external lock mismatch: {events}", errors)
-                        require("internal" not in kinds, f"{command} {label} existing marker created internal lock", errors)
-                        require(kinds.index("product") < kinds.index("external"), f"{command} {label} existing marker lock order mismatch: {events}", errors)
-                        observed_external[command][label] = [path for kind, path in events if kind == "external"][0]
+                        require(
+                            kinds.count("product") == 1,
+                            f"{command} {label} existing marker product lock mismatch: {events}",
+                            errors,
+                        )
+                        require(
+                            kinds.count("external") == 1,
+                            f"{command} {label} existing marker external lock mismatch: {events}",
+                            errors,
+                        )
+                        require(
+                            "internal" not in kinds,
+                            f"{command} {label} existing marker created internal lock",
+                            errors,
+                        )
+                        require(
+                            kinds.index("product") < kinds.index("external"),
+                            f"{command} {label} existing marker lock order mismatch: {events}",
+                            errors,
+                        )
+                        observed_external[command][label] = [
+                            path for kind, path in events if kind == "external"
+                        ][0]
                     require(
                         observed_external[command]["real"] == observed_external[command]["alias"],
                         f"{command} real and alias existing marker targets used different canonical external locks",
@@ -1033,11 +1860,21 @@ def validate_read_only_alias_and_lock_noop(errors: list[str]) -> None:
                     os.utime(target, ns=(old_ns, old_ns))
                 for command in ("status", "plan", "software-status"):
                     before_graph = exact_tree_identity(target)
-                    rc, stdout, stderr = run_main_captured(command_argv(command, target=str(target)))
+                    rc, stdout, stderr = run_main_captured(
+                        command_argv(command, target=str(target))
+                    )
                     require(rc == 0, f"{command} read-only no-op failed for {fixture}", errors)
-                    require(stderr == "", f"{command} read-only no-op wrote stderr for {fixture}", errors)
+                    require(
+                        stderr == "",
+                        f"{command} read-only no-op wrote stderr for {fixture}",
+                        errors,
+                    )
                     payload = json.loads(stdout)
-                    require(payload.get("ok") is True, f"{command} read-only no-op payload mismatch for {fixture}", errors)
+                    require(
+                        payload.get("ok") is True,
+                        f"{command} read-only no-op payload mismatch for {fixture}",
+                        errors,
+                    )
                     require(
                         exact_tree_identity(target) == before_graph,
                         f"{command} read-only no-op changed target graph for {fixture}",
@@ -1051,21 +1888,45 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
     anchor_start = source.index("def publish_bootstrap_anchor_no_replace")
     anchor_end = source.index("def publish_bootstrap_global_lock_anchor")
     anchor_source = source[anchor_start:anchor_end]
-    require("os.replace" not in anchor_source, "bootstrap anchors must not use replace-over-final", errors)
-    require("cleanup_path_with_retries(path" not in anchor_source, "bootstrap anchors must not unlink final path after publication", errors)
-    require("unlink_file_durable(path" not in anchor_source, "bootstrap anchors must not unlink final path after publication", errors)
-    require("os.link(temporary, path)" in anchor_source, "bootstrap anchors must use atomic no-replace publication", errors)
+    require(
+        "os.replace" not in anchor_source,
+        "bootstrap anchors must not use replace-over-final",
+        errors,
+    )
+    require(
+        "cleanup_path_with_retries(path" not in anchor_source,
+        "bootstrap anchors must not unlink final path after publication",
+        errors,
+    )
+    require(
+        "unlink_file_durable(path" not in anchor_source,
+        "bootstrap anchors must not unlink final path after publication",
+        errors,
+    )
+    require(
+        "os.link(temporary, path)" in anchor_source,
+        "bootstrap anchors must use atomic no-replace publication",
+        errors,
+    )
 
     def require_no_bootstrap_temp(pool: Path, label: str) -> None:
         snapshot = real_bootstrap_snapshot(pool)
         for entry in snapshot.get("entries", []):
-            require(".nddev.tmp." not in entry.get("name", ""), f"{label} left bootstrap temp residue", errors)
+            require(
+                ".nddev.tmp." not in entry.get("name", ""),
+                f"{label} left bootstrap temp residue",
+                errors,
+            )
 
     def require_global_anchor(pool: Path, label: str) -> None:
         path = pool / nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
-        descriptor = nddev_mimocode.open_bootstrap_anchor_lock_file(path, "bootstrap product lock file")
+        descriptor = nddev_mimocode.open_bootstrap_anchor_lock_file(
+            path, "bootstrap product lock file"
+        )
         try:
-            nddev_mimocode.acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap product lock file")
+            nddev_mimocode.acquire_bootstrap_anchor_lock(
+                descriptor, path, "bootstrap product lock file"
+            )
             nddev_mimocode.validate_bootstrap_global_lock_binding(descriptor, path)
         finally:
             nddev_mimocode.release_file_lock(descriptor)
@@ -1074,10 +1935,17 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
 
     def require_target_anchor(target: Path, label: str) -> None:
         canonical_target = target.parent.resolve() / target.name
-        path = nddev_mimocode.bootstrap_lock_pool(canonical_target) / f"{nddev_mimocode.bootstrap_lock_key(canonical_target)}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}"
-        descriptor = nddev_mimocode.open_bootstrap_anchor_lock_file(path, "bootstrap lifecycle lock file")
+        path = (
+            nddev_mimocode.bootstrap_lock_pool(canonical_target)
+            / f"{nddev_mimocode.bootstrap_lock_key(canonical_target)}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}"
+        )
+        descriptor = nddev_mimocode.open_bootstrap_anchor_lock_file(
+            path, "bootstrap lifecycle lock file"
+        )
         try:
-            nddev_mimocode.acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap lifecycle lock file")
+            nddev_mimocode.acquire_bootstrap_anchor_lock(
+                descriptor, path, "bootstrap lifecycle lock file"
+            )
             nddev_mimocode.validate_bootstrap_lock_binding(
                 descriptor,
                 path,
@@ -1102,7 +1970,11 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
             return result
 
         def fail_temp_alias_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
-            if linked["value"] and not injected["value"] and nddev_mimocode.is_bootstrap_publication_alias(path, anchor_path):
+            if (
+                linked["value"]
+                and not injected["value"]
+                and nddev_mimocode.is_bootstrap_publication_alias(path, anchor_path)
+            ):
                 injected["value"] = True
                 raise OSError("forced crash after final-path publication")
             return original_cleanup(path, *args, **kwargs)
@@ -1119,11 +1991,21 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
         finally:
             nddev_mimocode.os.link = original_link
             nddev_mimocode.cleanup_path_with_retries = original_cleanup
-        require(linked["value"] and injected["value"], "crash-after-link publication alias fault was not exercised", errors)
+        require(
+            linked["value"] and injected["value"],
+            "crash-after-link publication alias fault was not exercised",
+            errors,
+        )
         info = anchor_path.lstat()
-        require(info.st_nlink == 2, "crash-after-link final anchor must retain one temp alias before recovery", errors)
+        require(
+            info.st_nlink == 2,
+            "crash-after-link final anchor must retain one temp alias before recovery",
+            errors,
+        )
 
-    def require_unknown_hardlink_fails(anchor_path: Path, open_and_recover: Any, label: str) -> None:
+    def require_unknown_hardlink_fails(
+        anchor_path: Path, open_and_recover: Any, label: str
+    ) -> None:
         unknown = anchor_path.with_name(f".unknown-{anchor_path.name}.nddev.tmp.1.2")
         os.link(anchor_path, unknown)
         try:
@@ -1137,7 +2019,9 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
             with contextlib.suppress(FileNotFoundError):
                 unknown.unlink()
             with contextlib.suppress(OSError):
-                nddev_mimocode.fsync_directory_with_retries(anchor_path.parent, f"{label} unknown hardlink cleanup")
+                nddev_mimocode.fsync_directory_with_retries(
+                    anchor_path.parent, f"{label} unknown hardlink cleanup"
+                )
 
     def install_with_fault(target: Path, fault: str, *, target_only: bool) -> bool:
         original_open = nddev_mimocode.os.open
@@ -1170,7 +2054,11 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
             return original_open(path, flags, *args, **kwargs)
 
         def fail_fchmod(descriptor: int, mode: int) -> None:
-            if fault == "fchmod" and not injected_fault["value"] and mode == nddev_mimocode.OWNER_FILE_MODE:
+            if (
+                fault == "fchmod"
+                and not injected_fault["value"]
+                and mode == nddev_mimocode.OWNER_FILE_MODE
+            ):
                 injected_fault["value"] = True
                 raise OSError("forced bootstrap fchmod fault")
             return original_fchmod(descriptor, mode)
@@ -1195,15 +2083,26 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
 
         def fail_link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
             destination_path = Path(destination)
-            target_marker = destination_path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX) and destination_path.name != nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
+            target_marker = (
+                destination_path.name.endswith(nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX)
+                and destination_path.name != nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
+            )
             product_marker = destination_path.name == nddev_mimocode.BOOTSTRAP_GLOBAL_LOCK_NAME
-            if fault == "atomic-publish" and not injected_fault["value"] and ((target_only and target_marker) or (not target_only and product_marker)):
+            if (
+                fault == "atomic-publish"
+                and not injected_fault["value"]
+                and ((target_only and target_marker) or (not target_only and product_marker))
+            ):
                 injected_fault["value"] = True
                 raise OSError("forced bootstrap atomic publish fault")
             return original_link(source, destination, *args, **kwargs)
 
         def fail_acquire(descriptor: int, path: Path, *, shared: bool = False) -> None:
-            if fault == "lock-acquisition" and not injected_fault["value"] and ".nddev.tmp." in path.name:
+            if (
+                fault == "lock-acquisition"
+                and not injected_fault["value"]
+                and ".nddev.tmp." in path.name
+            ):
                 injected_fault["value"] = True
                 raise OSError("forced bootstrap lock acquisition fault")
             return original_acquire(descriptor, path, shared=shared)
@@ -1216,7 +2115,9 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
             nddev_mimocode.os.link = fail_link
             nddev_mimocode.acquire_file_lock = fail_acquire
             require_exception(
-                lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "full-auto", "install"),
+                lambda: nddev_mimocode.mutate_setup(
+                    target, "nddev-builder", "full-auto", "install"
+                ),
                 (OSError, nddev_mimocode.MiMoCodeSetupError),
                 f"bootstrap {fault} fault must propagate",
                 errors,
@@ -1241,13 +2142,23 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                 target = target_parent / "target"
                 pool = bootstrap_product_root(injected)
                 before = real_bootstrap_snapshot(pool)
-                require(install_with_fault(target, fault, target_only=False), f"bootstrap product {fault} fault was not exercised", errors)
-                require(real_bootstrap_snapshot(pool) == before, f"bootstrap {fault} fault mutated lock pool", errors)
+                require(
+                    install_with_fault(target, fault, target_only=False),
+                    f"bootstrap product {fault} fault was not exercised",
+                    errors,
+                )
+                require(
+                    real_bootstrap_snapshot(pool) == before,
+                    f"bootstrap {fault} fault mutated lock pool",
+                    errors,
+                )
                 require(not target.exists(), f"bootstrap {fault} fault created target", errors)
 
     for fault in ("create", "fchmod", "write", "file-fsync", "atomic-publish", "lock-acquisition"):
         with isolated_bootstrap_root(errors) as injected:
-            with tempfile.TemporaryDirectory(prefix=f"nddev-mimocode-target-bootstrap-{fault}.") as raw:
+            with tempfile.TemporaryDirectory(
+                prefix=f"nddev-mimocode-target-bootstrap-{fault}."
+            ) as raw:
                 root = Path(raw)
                 root.chmod(0o700)
                 target_parent = root / "targets"
@@ -1259,9 +2170,19 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                 pool.chmod(0o700)
                 nddev_mimocode.ensure_bootstrap_global_lock_anchor(pool)
                 before = real_bootstrap_snapshot(pool)
-                require(install_with_fault(target, fault, target_only=True), f"bootstrap target {fault} fault was not exercised", errors)
-                require(real_bootstrap_snapshot(pool) == before, f"bootstrap target {fault} fault mutated lock pool", errors)
-                require(not target.exists(), f"bootstrap target {fault} fault created target", errors)
+                require(
+                    install_with_fault(target, fault, target_only=True),
+                    f"bootstrap target {fault} fault was not exercised",
+                    errors,
+                )
+                require(
+                    real_bootstrap_snapshot(pool) == before,
+                    f"bootstrap target {fault} fault mutated lock pool",
+                    errors,
+                )
+                require(
+                    not target.exists(), f"bootstrap target {fault} fault created target", errors
+                )
 
     with isolated_bootstrap_root(errors) as injected:
         pool = bootstrap_product_root(injected)
@@ -1273,17 +2194,29 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
             lambda: nddev_mimocode.publish_bootstrap_global_lock_anchor(global_anchor),
         )
         require_global_anchor(pool, "bootstrap product crash recovery")
-        require(global_anchor.lstat().st_nlink == 1, "product crash recovery did not normalize final nlink", errors)
+        require(
+            global_anchor.lstat().st_nlink == 1,
+            "product crash recovery did not normalize final nlink",
+            errors,
+        )
         alias = global_anchor.with_name(f".{global_anchor.name}.nddev.tmp.123.456")
         os.link(global_anchor, alias)
         nddev_mimocode.publish_bootstrap_global_lock_anchor(global_anchor)
-        require(global_anchor.lstat().st_nlink == 1 and not nddev_mimocode.path_present(alias), "product EEXIST waiter did not recover publication alias", errors)
+        require(
+            global_anchor.lstat().st_nlink == 1 and not nddev_mimocode.path_present(alias),
+            "product EEXIST waiter did not recover publication alias",
+            errors,
+        )
         require_unknown_hardlink_fails(
             global_anchor,
             lambda: require_global_anchor(pool, "product unknown hardlink"),
             "product anchor",
         )
-        require(global_anchor.lstat().st_nlink == 1, "product unknown hardlink cleanup did not restore nlink", errors)
+        require(
+            global_anchor.lstat().st_nlink == 1,
+            "product unknown hardlink cleanup did not restore nlink",
+            errors,
+        )
 
     with isolated_bootstrap_root(errors) as injected:
         with tempfile.TemporaryDirectory(prefix="nddev-mimocode-target-crash-recovery.") as raw:
@@ -1302,15 +2235,27 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
             target_anchor = pool / f"{target_key}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}"
             create_crashed_publication_alias(
                 target_anchor,
-                lambda: nddev_mimocode.publish_new_bootstrap_lock_binding(target_anchor, canonical_target, target_key),
+                lambda: nddev_mimocode.publish_new_bootstrap_lock_binding(
+                    target_anchor, canonical_target, target_key
+                ),
             )
             require_target_anchor(target, "bootstrap target crash recovery")
-            require(target_anchor.lstat().st_nlink == 1, "target crash recovery did not normalize final nlink", errors)
+            require(
+                target_anchor.lstat().st_nlink == 1,
+                "target crash recovery did not normalize final nlink",
+                errors,
+            )
             alias = target_anchor.with_name(f".{target_anchor.name}.nddev.tmp.123.456")
             os.link(target_anchor, alias)
-            descriptor = nddev_mimocode.publish_new_bootstrap_lock_binding(target_anchor, canonical_target, target_key)
+            descriptor = nddev_mimocode.publish_new_bootstrap_lock_binding(
+                target_anchor, canonical_target, target_key
+            )
             try:
-                require(target_anchor.lstat().st_nlink == 1 and not nddev_mimocode.path_present(alias), "target EEXIST waiter did not recover publication alias", errors)
+                require(
+                    target_anchor.lstat().st_nlink == 1 and not nddev_mimocode.path_present(alias),
+                    "target EEXIST waiter did not recover publication alias",
+                    errors,
+                )
             finally:
                 nddev_mimocode.release_file_lock(descriptor)
                 os.close(descriptor)
@@ -1319,11 +2264,17 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                 lambda: require_target_anchor(target, "target unknown hardlink"),
                 "target anchor",
             )
-            require(target_anchor.lstat().st_nlink == 1, "target unknown hardlink cleanup did not restore nlink", errors)
+            require(
+                target_anchor.lstat().st_nlink == 1,
+                "target unknown hardlink cleanup did not restore nlink",
+                errors,
+            )
 
     for fault in ("parent-fsync", "handoff"):
         with isolated_bootstrap_root(errors) as injected:
-            with tempfile.TemporaryDirectory(prefix=f"nddev-mimocode-target-bootstrap-{fault}.") as raw:
+            with tempfile.TemporaryDirectory(
+                prefix=f"nddev-mimocode-target-bootstrap-{fault}."
+            ) as raw:
                 root = Path(raw)
                 root.chmod(0o700)
                 target_parent = root / "targets"
@@ -1339,7 +2290,10 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                 injected_fault = {"value": False}
 
                 def fail_parent_fsync(path: Path, label: str) -> None:
-                    if label == "bootstrap lifecycle lock pool after binding publish" and not injected_fault["value"]:
+                    if (
+                        label == "bootstrap lifecycle lock pool after binding publish"
+                        and not injected_fault["value"]
+                    ):
                         injected_fault["value"] = True
                         raise OSError("forced bootstrap parent fsync fault")
                     return original_fsync_directory(path, label)
@@ -1354,9 +2308,12 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                     if fault == "parent-fsync":
                         nddev_mimocode.fsync_directory = fail_parent_fsync
                         descriptor = nddev_mimocode.publish_new_bootstrap_lock_binding(
-                            pool / f"{nddev_mimocode.bootstrap_lock_key(target_parent.resolve() / target.name)}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}",
+                            pool
+                            / f"{nddev_mimocode.bootstrap_lock_key(target_parent.resolve() / target.name)}{nddev_mimocode.BOOTSTRAP_LOCK_SUFFIX}",
                             target_parent.resolve() / target.name,
-                            nddev_mimocode.bootstrap_lock_key(target_parent.resolve() / target.name),
+                            nddev_mimocode.bootstrap_lock_key(
+                                target_parent.resolve() / target.name
+                            ),
                         )
                         os.close(descriptor)
                     else:
@@ -1367,7 +2324,11 @@ def validate_bootstrap_lock_publication_faults(errors: list[str]) -> None:
                             "bootstrap handoff fault must propagate",
                             errors,
                         )
-                    require(injected_fault["value"], f"bootstrap {fault} fault was not exercised", errors)
+                    require(
+                        injected_fault["value"],
+                        f"bootstrap {fault} fault was not exercised",
+                        errors,
+                    )
                 finally:
                     nddev_mimocode.fsync_directory = original_fsync_directory
                     nddev_mimocode.verify_locked_file_identity = original_verify
@@ -1443,7 +2404,9 @@ def validate_launch_environment(errors: list[str]) -> None:
             fixed |= set(EXPECTED_FIXED_RUNTIME_ENV)
             allowed_names = set(nddev_mimocode.SAFE_CHILD_INHERITED_ENV_NAMES) | fixed
             require(set(env) <= allowed_names, "launch env contains non-allowlisted names", errors)
-            require(env.get("PATH") == nddev_mimocode.DETERMINISTIC_PATH, "launch PATH mismatch", errors)
+            require(
+                env.get("PATH") == nddev_mimocode.DETERMINISTIC_PATH, "launch PATH mismatch", errors
+            )
             for name, expected in EXPECTED_FIXED_RUNTIME_ENV.items():
                 require(env.get(name) == expected, f"fixed runtime env mismatch: {name}", errors)
             require("MIMOCODE_MIMO_ONLY" not in env, "launch env must not force MiMo-only", errors)
@@ -1451,9 +2414,19 @@ def validate_launch_environment(errors: list[str]) -> None:
                 require(env.get(name) == value, f"safe env missing: {name}", errors)
             for name in secret_parent:
                 require(env.get(name) != sentinel, f"secret env leaked: {name}", errors)
-            for key in ("HOME", "TMPDIR", "XDG_CONFIG_HOME", "MIMOCODE_HOME", "MIMOCODE_CONFIG_DIR"):
+            for key in (
+                "HOME",
+                "TMPDIR",
+                "XDG_CONFIG_HOME",
+                "MIMOCODE_HOME",
+                "MIMOCODE_CONFIG_DIR",
+            ):
                 path = Path(env[key])
-                require(path.exists() and os.access(path, os.W_OK), f"runtime path is not writable: {key}", errors)
+                require(
+                    path.exists() and os.access(path, os.W_OK),
+                    f"runtime path is not writable: {key}",
+                    errors,
+                )
             probe_env = nddev_mimocode.minimal_process_env(tmp_dir=Path(raw) / "probe-tmp")
             for name, expected in EXPECTED_FIXED_RUNTIME_ENV.items():
                 require(probe_env.get(name) == expected, f"probe env mismatch: {name}", errors)
@@ -1490,7 +2463,11 @@ def validate_project_boundary(errors: list[str]) -> None:
             "managed config dir must reject unknown launch inputs",
             errors,
         )
-        require(unknown_skill.exists(), "managed config boundary check must not delete unknown files", errors)
+        require(
+            unknown_skill.exists(),
+            "managed config boundary check must not delete unknown files",
+            errors,
+        )
         for index, relative in enumerate(nddev_mimocode.PROJECT_BOUNDARY_PATHS):
             target = Path(raw) / f"target-{index}"
             target.mkdir(mode=0o700)
@@ -1587,7 +2564,9 @@ def exact_tree_identity(root: Path) -> dict[str, tuple[str, int, int, int, int, 
         relative = "." if path == root else str(path.relative_to(root))
         info = path.lstat()
         mode = stat.S_IMODE(info.st_mode)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None
+        digest = (
+            hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None
+        )
         if stat.S_ISDIR(info.st_mode):
             kind = "dir"
         elif stat.S_ISREG(info.st_mode):
@@ -1605,18 +2584,34 @@ def identity_snapshot(paths: list[Path]) -> dict[str, tuple[int, int, int, int, 
     result: dict[str, tuple[int, int, int, int, str | None]] = {}
     for path in sorted(paths, key=str):
         info = path.lstat()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None
-        result[str(path)] = (info.st_ino, info.st_size, stat.S_IMODE(info.st_mode), info.st_mtime_ns, digest)
+        digest = (
+            hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None
+        )
+        result[str(path)] = (
+            info.st_ino,
+            info.st_size,
+            stat.S_IMODE(info.st_mode),
+            info.st_mtime_ns,
+            digest,
+        )
     return result
 
 
 def managed_identity_snapshot(target: Path) -> dict[str, tuple[int, int, int, int, str | None]]:
-    paths = [target / relative for relative in nddev_mimocode.MANAGED_PATHS if (target / relative).exists()]
+    paths = [
+        target / relative
+        for relative in nddev_mimocode.MANAGED_PATHS
+        if (target / relative).exists()
+    ]
     return identity_snapshot(paths)
 
 
 def software_identity_snapshot(target: Path) -> dict[str, tuple[int, int, int, int, str | None]]:
-    paths = [target / relative for relative in nddev_mimocode.software_file_modes() if (target / relative).exists()]
+    paths = [
+        target / relative
+        for relative in nddev_mimocode.software_file_modes()
+        if (target / relative).exists()
+    ]
     return identity_snapshot(paths)
 
 
@@ -1650,7 +2645,9 @@ def fake_software_manifest(binary: bytes, version: str = "old") -> bytes:
             "version": version,
             "command": nddev_mimocode.COMMAND_NAME,
             "executable": f"bin/{nddev_mimocode.COMMAND_NAME}",
-            "version_tree_executable": str(nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME),
+            "version_tree_executable": str(
+                nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME
+            ),
             "asset": "test",
             "asset_url": "https://example.invalid/test",
             "asset_size": len(binary),
@@ -1675,8 +2672,16 @@ def make_fake_software(target: Path, binary: bytes = b"old-binary\n", version: s
     target.chmod(0o700)
     for relative, content, mode in (
         (Path("bin") / nddev_mimocode.COMMAND_NAME, binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
-        (nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME, binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
-        (nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE, fake_software_manifest(binary, version), nddev_mimocode.OWNER_FILE_MODE),
+        (
+            nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME,
+            binary,
+            nddev_mimocode.OWNER_EXECUTABLE_MODE,
+        ),
+        (
+            nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE,
+            fake_software_manifest(binary, version),
+            nddev_mimocode.OWNER_FILE_MODE,
+        ),
     ):
         path = target / relative
         current = target
@@ -1719,9 +2724,17 @@ def validate_replace_managed_state_cleanup(errors: list[str]) -> None:
             finally:
                 setattr(nddev_mimocode.os, patched_name, original_callable)
             after_entries = sorted(item.name for item in config_root.iterdir())
-            require(after_entries == before_entries, f"forced {patched_name} failure left temp residue", errors)
+            require(
+                after_entries == before_entries,
+                f"forced {patched_name} failure left temp residue",
+                errors,
+            )
             config_path = target / nddev_mimocode.MIMOCODE_CONFIG_RELATIVE
-            require(config_path.read_bytes() == original_content, f"forced {patched_name} failure changed original managed file", errors)
+            require(
+                config_path.read_bytes() == original_content,
+                f"forced {patched_name} failure changed original managed file",
+                errors,
+            )
             nddev_mimocode.validate_launch_managed_config_boundary(target)
 
         target = root / "temp-fchmod"
@@ -1752,8 +2765,14 @@ def validate_replace_managed_state_cleanup(errors: list[str]) -> None:
         finally:
             nddev_mimocode.os.fchmod = original_fchmod
         after_entries = sorted(item.name for item in config_root.iterdir())
-        require(after_entries == before_entries, "forced temp fchmod failure left temp residue", errors)
-        require(config_path.read_bytes() == original_content, "forced temp fchmod failure changed original managed file", errors)
+        require(
+            after_entries == before_entries, "forced temp fchmod failure left temp residue", errors
+        )
+        require(
+            config_path.read_bytes() == original_content,
+            "forced temp fchmod failure changed original managed file",
+            errors,
+        )
         nddev_mimocode.validate_launch_managed_config_boundary(target)
 
         target = root / "success"
@@ -1793,575 +2812,23 @@ def validate_replace_managed_state_cleanup(errors: list[str]) -> None:
             Path.chmod = original_path_chmod
         after_entries = sorted(item.name for item in config_root.iterdir())
         require(replace_seen, "successful replace regression did not observe os.replace", errors)
-        require(not destination_chmod_after_replace, "managed replace must not chmod destination after os.replace", errors)
+        require(
+            not destination_chmod_after_replace,
+            "managed replace must not chmod destination after os.replace",
+            errors,
+        )
         require(after_entries == before_entries, "successful replace left temp residue", errors)
-        require(config_path.read_bytes() == updated_content, "successful replace did not write new managed file", errors)
-        require(stat.S_IMODE(config_path.lstat().st_mode) == 0o600, "successful replace did not preserve 0600 mode", errors)
+        require(
+            config_path.read_bytes() == updated_content,
+            "successful replace did not write new managed file",
+            errors,
+        )
+        require(
+            stat.S_IMODE(config_path.lstat().st_mode) == 0o600,
+            "successful replace did not preserve 0600 mode",
+            errors,
+        )
         nddev_mimocode.validate_launch_managed_config_boundary(target)
-
-
-def validate_transaction_faults(errors: list[str]) -> None:
-    with isolated_bootstrap_root(errors):
-        with tempfile.TemporaryDirectory(prefix="nddev-mimocode-transaction.") as raw:
-            root = Path(raw)
-
-            target = make_managed_target(root / "noop")
-            before_managed_identity = managed_identity_snapshot(target)
-            before_backup = nddev_mimocode.backup_pool_snapshot(target)
-            result = nddev_mimocode.mutate_setup(target, "nddev-builder", "full-auto", "install")
-            require(result.get("changed") == [], "managed no-op must report no changed paths", errors)
-            require(managed_identity_snapshot(target) == before_managed_identity, "managed no-op changed file identity", errors)
-            require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "managed no-op changed backup state", errors)
-            update_plan = nddev_mimocode.plan_setup(target, "nddev-builder", "full-auto")
-            require(update_plan.get("operation") == "update", "managed current plan must route to setup update", errors)
-            require(update_plan.get("changed") == [], "managed current update plan must be a no-op", errors)
-            update_result = nddev_mimocode.update_setup(target)
-            require(update_result.get("operation") == "update", "setup update operation mismatch", errors)
-            require(update_result.get("changed") == [], "setup update no-op must report no changed paths", errors)
-            require(update_result.get("backup_slot") is None, "setup update no-op must not rotate backups", errors)
-            require(update_result.get("needs_update") is False, "setup update no-op must report current state", errors)
-            require(managed_identity_snapshot(target) == before_managed_identity, "setup update no-op changed file identity", errors)
-            require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "setup update no-op changed backup state", errors)
-            require_manager_failure(lambda: nddev_mimocode.update_setup(root / "missing-update"), "setup update must reject missing targets", errors)
-
-            target = make_managed_target(root / "update-needed")
-            stamp_path = target / nddev_mimocode.STAMP_NAME
-            stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
-            stamp["build_version"] = "0.1.0"
-            stamp_path.write_bytes(nddev_mimocode.canonical_json(stamp))
-            stamp_path.chmod(0o600)
-            require(nddev_mimocode.inspect_target(target).get("needs_update") is True, "setup update fixture must need update", errors)
-            before_backup = nddev_mimocode.backup_pool_snapshot(target)
-            update_result = nddev_mimocode.update_setup(target)
-            require(update_result.get("operation") == "update", "setup update changed operation mismatch", errors)
-            require(update_result.get("changed") == [nddev_mimocode.STAMP_NAME], "setup update should change only the stale stamp", errors)
-            require(update_result.get("backup_slot") == 0, "setup update with changes must create backup", errors)
-            require(update_result.get("needs_update") is False, "setup update did not clear needs_update", errors)
-            require(nddev_mimocode.backup_pool_snapshot(target) != before_backup, "setup update with changes did not advance backup state", errors)
-            require_no_transaction_residue(target, "setup update with changes left residue", errors)
-
-            target = root / "failed-first-install"
-            before_root = tree_snapshot(root)
-            original_verify_managed = nddev_mimocode.verify_managed_state
-            postcondition_failed = {"value": False}
-
-            def fail_first_install_postcondition(target_arg: Path, desired: dict[Path, bytes | None], label: str) -> None:
-                original_verify_managed(target_arg, desired, label)
-                if label == "managed postcondition" and not postcondition_failed["value"]:
-                    postcondition_failed["value"] = True
-                    raise nddev_mimocode.ConcurrentTargetChange("forced first install postcondition failure")
-
-            nddev_mimocode.verify_managed_state = fail_first_install_postcondition
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "install"),
-                    nddev_mimocode.ConcurrentTargetChange,
-                    "first setup install postcondition failure must propagate",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.verify_managed_state = original_verify_managed
-            require(postcondition_failed["value"], "first setup install postcondition fault was not exercised", errors)
-            require(tree_snapshot(root) == before_root, "failed first setup install changed the absent target graph", errors)
-            require(not nddev_mimocode.path_present(target), "failed first setup install left a target directory", errors)
-
-            for label, patch_name in (("write", "write"), ("fchmod", "fchmod")):
-                target = make_managed_target(root / label)
-                before = tree_snapshot(target)
-                original = getattr(nddev_mimocode.os, patch_name)
-
-                def failing_call(*_args: Any, **_kwargs: Any) -> None:
-                    raise OSError(f"forced {patch_name} failure")
-
-                setattr(nddev_mimocode.os, patch_name, failing_call)
-                try:
-                    require_exception(
-                        lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch"),
-                        OSError,
-                        f"forced {patch_name} failure must propagate",
-                        errors,
-                    )
-                finally:
-                    setattr(nddev_mimocode.os, patch_name, original)
-                require(tree_snapshot(target) == before, f"forced {patch_name} failure changed managed tree", errors)
-                require_no_transaction_residue(target, f"forced {patch_name} failure left residue", errors)
-
-            target = make_managed_target(root / "parent-fsync")
-            before = tree_snapshot(target)
-            original_fsync_directory = nddev_mimocode.fsync_directory
-            armed = {"value": False}
-
-            def failing_parent_fsync(path: Path, label: str) -> None:
-                if armed["value"] and label.startswith("parent directory for "):
-                    armed["value"] = False
-                    raise OSError("forced parent fsync failure")
-                return original_fsync_directory(path, label)
-
-            nddev_mimocode.fsync_directory = failing_parent_fsync
-            armed["value"] = True
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch"),
-                    OSError,
-                    "forced managed parent fsync failure must propagate",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.fsync_directory = original_fsync_directory
-            require(tree_snapshot(target) == before, "forced parent fsync failure changed managed tree", errors)
-            require_no_transaction_residue(target, "forced parent fsync failure left residue", errors)
-
-            target = make_managed_target(root / "postcondition")
-            before = nddev_mimocode.current_managed_snapshot(target)
-            original_verify_managed = nddev_mimocode.verify_managed_state
-            tampered = {"value": False}
-
-            def tampering_verify(target_arg: Path, desired: dict[Path, bytes | None], label: str) -> None:
-                if label == "managed replace" and not tampered["value"]:
-                    config_path = target_arg / nddev_mimocode.MIMOCODE_CONFIG_RELATIVE
-                    config_path.write_bytes(b'{"tampered":true}\n')
-                    config_path.chmod(0o600)
-                    tampered["value"] = True
-                original_verify_managed(target_arg, desired, label)
-
-            nddev_mimocode.verify_managed_state = tampering_verify
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch"),
-                    nddev_mimocode.ConcurrentTargetChange,
-                    "managed postcondition tamper must fail closed",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.verify_managed_state = original_verify_managed
-            require(nddev_mimocode.current_managed_snapshot(target) == before, "managed postcondition tamper was not rolled back", errors)
-            require_no_transaction_residue(target, "managed postcondition tamper left residue", errors)
-
-            target = make_managed_target(root / "managed-rollback-one-shot")
-            before_managed = managed_identity_snapshot(target)
-            before_backup = nddev_mimocode.backup_pool_snapshot(target)
-            original_verify_managed = nddev_mimocode.verify_managed_state
-            original_fsync_directory = nddev_mimocode.fsync_directory
-            rollback_armed = {"value": False}
-            rollback_failed = {"value": False}
-
-            def original_fails_then_rollback_fault(target_arg: Path, desired: dict[Path, bytes | None], label: str) -> None:
-                original_verify_managed(target_arg, desired, label)
-                if label == "managed replace" and not rollback_armed["value"]:
-                    rollback_armed["value"] = True
-                    raise nddev_mimocode.ConcurrentTargetChange("forced managed postcondition failure")
-
-            def one_shot_rollback_parent_fsync(path: Path, label: str) -> None:
-                if rollback_armed["value"] and not rollback_failed["value"] and label.startswith("parent directory after rollback restore "):
-                    rollback_failed["value"] = True
-                    raise OSError("forced managed rollback parent fsync failure")
-                return original_fsync_directory(path, label)
-
-            nddev_mimocode.verify_managed_state = original_fails_then_rollback_fault
-            nddev_mimocode.fsync_directory = one_shot_rollback_parent_fsync
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch"),
-                    nddev_mimocode.ConcurrentTargetChange,
-                    "managed rollback one-shot fault must re-raise original failure",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.verify_managed_state = original_verify_managed
-                nddev_mimocode.fsync_directory = original_fsync_directory
-            require(rollback_failed["value"], "managed rollback one-shot fault was not exercised", errors)
-            require(managed_identity_snapshot(target) == before_managed, "managed rollback one-shot fault left mixed managed objects", errors)
-            require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "managed rollback one-shot fault changed backup state", errors)
-            require_no_transaction_residue(target, "managed rollback one-shot fault left residue", errors)
-
-            target = make_managed_target(root / "backup-schema")
-            nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch")
-            pool = nddev_mimocode.backup_pool(target)
-            envelope, files = nddev_mimocode.load_backup(target, 0)
-            require(envelope.get("file_records") == nddev_mimocode.backup_file_records(files), "backup file_records mismatch", errors)
-            backup_config = pool / "0" / nddev_mimocode.MIMOCODE_CONFIG_RELATIVE
-            backup_stamp = pool / "0" / nddev_mimocode.STAMP_NAME
-            tampered_config = b'{"tampered":true}\n'
-            backup_config.write_bytes(tampered_config)
-            backup_config.chmod(0o600)
-            stamp = json.loads(backup_stamp.read_text(encoding="utf-8"))
-            stamp["managed_files"][str(nddev_mimocode.MIMOCODE_CONFIG_RELATIVE)] = nddev_mimocode.managed_digest(
-                nddev_mimocode.MIMOCODE_CONFIG_RELATIVE,
-                tampered_config,
-            )
-            backup_stamp.write_bytes(nddev_mimocode.canonical_json(stamp))
-            backup_stamp.chmod(0o600)
-            before_restore = nddev_mimocode.current_managed_snapshot(target)
-            require_manager_failure(lambda: nddev_mimocode.restore_backup(target, 0), "tampered backup payload must be rejected", errors)
-            require(nddev_mimocode.current_managed_snapshot(target) == before_restore, "tampered backup restore mutated target", errors)
-
-            target = make_managed_target(root / "backup-extra-empty-dir")
-            nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch")
-            extra_dir = nddev_mimocode.backup_pool(target) / "0" / "empty-extra"
-            extra_dir.mkdir(mode=0o700)
-            extra_dir.chmod(0o700)
-            before_restore = nddev_mimocode.current_managed_snapshot(target)
-            require_manager_failure(lambda: nddev_mimocode.restore_backup(target, 0), "backup slot extra empty directory must be rejected", errors)
-            require(nddev_mimocode.current_managed_snapshot(target) == before_restore, "extra backup directory restore mutated target", errors)
-
-            target = make_managed_target(root / "rotation")
-            for index in range(12):
-                profile = "safe" if index % 2 == 0 else "full-auto"
-                nddev_mimocode.mutate_setup(target, "nddev-builder", profile, "switch")
-            pool = nddev_mimocode.backup_pool(target)
-            require(not (pool / "10").exists(), "backup rotation created slot 10", errors)
-            for slot in range(10):
-                slot_dir = pool / str(slot)
-                require(slot_dir.is_dir(), f"backup rotation missing slot {slot}", errors)
-                envelope, files = nddev_mimocode.load_backup(target, slot)
-                require(envelope["slot"] == slot, f"backup slot {slot} identity mismatch", errors)
-                require(envelope["file_records"] == nddev_mimocode.backup_file_records(files), f"backup slot {slot} records mismatch", errors)
-
-            target = make_managed_target(root / "backup-fail")
-            before = tree_snapshot(target)
-            original_replace = nddev_mimocode.os.replace
-
-            def failing_pool_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
-                if Path(destination).name == ".nddev-mimocode-backups":
-                    raise OSError("forced backup pool replace failure")
-                return original_replace(source, destination, *args, **kwargs)
-
-            nddev_mimocode.os.replace = failing_pool_replace
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch"),
-                    OSError,
-                    "forced backup pool replace failure must propagate",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.os.replace = original_replace
-            require(tree_snapshot(target) == before, "backup pool replace failure mutated target", errors)
-            require_no_transaction_residue(target, "backup pool replace failure left residue", errors)
-
-            target = make_managed_target(root / "backup-rollback-one-shot")
-            nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch")
-            before_managed = nddev_mimocode.current_managed_snapshot(target)
-            before_backup = nddev_mimocode.backup_pool_snapshot(target)
-            original_fsync_directory = nddev_mimocode.fsync_directory
-            original_replace = nddev_mimocode.os.replace
-            publish_failed = {"value": False}
-            rollback_replace_failed = {"value": False}
-            rollback_fsync_failed = {"value": False}
-
-            def fail_after_backup_publish(path: Path, label: str) -> None:
-                if label == "target directory after backup pool replace" and not publish_failed["value"]:
-                    publish_failed["value"] = True
-                    raise OSError("forced backup publish parent fsync failure")
-                if label == "target directory after backup pool restore" and rollback_replace_failed["value"] and not rollback_fsync_failed["value"]:
-                    rollback_fsync_failed["value"] = True
-                    raise OSError("forced backup rollback parent fsync failure")
-                return original_fsync_directory(path, label)
-
-            def fail_one_backup_rollback_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
-                source_path = Path(source)
-                if (
-                    publish_failed["value"]
-                    and not rollback_replace_failed["value"]
-                    and Path(destination) == nddev_mimocode.backup_pool(target)
-                    and ".retired." in source_path.name
-                ):
-                    rollback_replace_failed["value"] = True
-                    raise OSError("forced backup rollback replace failure")
-                return original_replace(source, destination, *args, **kwargs)
-
-            nddev_mimocode.fsync_directory = fail_after_backup_publish
-            nddev_mimocode.os.replace = fail_one_backup_rollback_replace
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.mutate_setup(target, "nddev-builder", "full-auto", "switch"),
-                    OSError,
-                    "forced backup publish failure must propagate",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.fsync_directory = original_fsync_directory
-                nddev_mimocode.os.replace = original_replace
-            require(
-                publish_failed["value"] and rollback_replace_failed["value"] and rollback_fsync_failed["value"],
-                "backup rollback one-shot fault was not exercised",
-                errors,
-            )
-            require(nddev_mimocode.current_managed_snapshot(target) == before_managed, "backup rollback one-shot changed managed state", errors)
-            require(nddev_mimocode.backup_pool_snapshot(target) == before_backup, "backup rollback one-shot changed backup state", errors)
-            require_no_transaction_residue(target, "backup rollback one-shot left residue", errors)
-
-            target = make_managed_target(root / "backup-cleanup-retry")
-            nddev_mimocode.mutate_setup(target, "nddev-builder", "safe", "switch")
-            before_backup = nddev_mimocode.backup_pool_snapshot(target)
-            original_rmdir = nddev_mimocode.rmdir_if_empty_durable
-            cleanup_failed = {"value": False}
-
-            def fail_retired_cleanup_once(path: Path) -> bool:
-                if ".retired." in str(path) and not cleanup_failed["value"]:
-                    cleanup_failed["value"] = True
-                    raise OSError("forced backup retired cleanup failure")
-                return original_rmdir(path)
-
-            nddev_mimocode.rmdir_if_empty_durable = fail_retired_cleanup_once
-            try:
-                switched = nddev_mimocode.mutate_setup(target, "nddev-builder", "full-auto", "switch")
-            finally:
-                nddev_mimocode.rmdir_if_empty_durable = original_rmdir
-            require(cleanup_failed["value"], "backup retired cleanup one-shot fault was not exercised", errors)
-            require(switched.get("backup_slot") == 0, "backup cleanup retry switch did not create backup", errors)
-            require(switched.get("cleanup_pending") is True, "backup cleanup retry must report cleanup_pending", errors)
-            require(nddev_mimocode.backup_pool_snapshot(target) != before_backup, "backup cleanup retry did not advance backup pool", errors)
-            pending = nddev_mimocode.inspect_target(target)
-            require(pending.get("cleanup_pending") is True, "backup cleanup retry status did not expose cleanup_pending", errors)
-            require(
-                all("relative_path" not in entry for entry in pending.get("cleanup_pending_entries", [])),
-                "cleanup pending metadata must not expose cleanup paths",
-                errors,
-            )
-            drained = nddev_mimocode.update_setup(target)
-            require(drained.get("cleanup_drained") is True, "backup cleanup retry next mutation did not drain pending cleanup", errors)
-            require(drained.get("cleanup_pending") is False, "backup cleanup retry drain left cleanup pending", errors)
-            require_no_transaction_residue(target, "backup cleanup retry drain left residue", errors)
-
-            target = (root / "remove-cli").resolve()
-            make_fake_software(target)
-            before = software_identity_snapshot(target)
-            original_replace = nddev_mimocode.os.replace
-            moved_first = {"value": False}
-
-            def failing_remove_hold(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
-                source_path = Path(source)
-                if source_path == nddev_mimocode.software_tree_binary(target):
-                    moved_first["value"] = True
-                    return original_replace(source, destination, *args, **kwargs)
-                if moved_first["value"] and source_path == nddev_mimocode.mimo_executable(target):
-                    raise OSError("forced software hold failure")
-                return original_replace(source, destination, *args, **kwargs)
-
-            nddev_mimocode.os.replace = failing_remove_hold
-            try:
-                require_exception(lambda: nddev_mimocode.remove_cli(target), OSError, "forced remove-cli hold failure must propagate", errors)
-            finally:
-                nddev_mimocode.os.replace = original_replace
-            require(software_identity_snapshot(target) == before, "remove-cli hold failure did not rollback exact software objects", errors)
-            require_no_transaction_residue(target, "remove-cli hold failure left residue", errors)
-
-            target = (root / "remove-cli-directory").resolve()
-            make_fake_software(target)
-            before_tree = exact_tree_identity(target)
-            original_hold_empty = nddev_mimocode.DirectoryUndoTransaction.hold_empty
-            directory_removed = {"value": False}
-
-            def fail_after_first_directory_hold(self: Any, relative: Path) -> bool:
-                held = original_hold_empty(self, relative)
-                if held and not directory_removed["value"]:
-                    directory_removed["value"] = True
-                    require(not nddev_mimocode.path_present(target / relative), "directory hold did not remove visible software directory", errors)
-                    raise OSError("forced remove-cli directory post-delete fault")
-                return held
-
-            nddev_mimocode.DirectoryUndoTransaction.hold_empty = fail_after_first_directory_hold
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.remove_cli(target),
-                    OSError,
-                    "forced remove-cli directory post-delete fault must propagate",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.DirectoryUndoTransaction.hold_empty = original_hold_empty
-            require(directory_removed["value"], "remove-cli directory post-delete fault was not exercised", errors)
-            require(exact_tree_identity(target) == before_tree, "remove-cli directory post-delete fault changed directory identity", errors)
-            require_no_transaction_residue(target, "remove-cli directory post-delete fault left residue", errors)
-
-            target = (root / "software-rollback").resolve()
-            old_binary = b"old-binary\n"
-            new_binary = b"new-binary\n"
-            make_fake_software(target, old_binary)
-            before_software = software_identity_snapshot(target)
-            original_host = nddev_mimocode.require_supported_product_host
-            original_status = nddev_mimocode.software_status
-            original_selected = nddev_mimocode.selected_asset
-            original_read_url = nddev_mimocode.read_url
-            original_extract = nddev_mimocode.extract_verified_binary
-            original_installer = nddev_mimocode.read_pinned_installer
-            original_run_installer = nddev_mimocode.run_official_installer
-            original_verify = nddev_mimocode.verify_software_state
-            original_fsync_directory = nddev_mimocode.fsync_directory
-            status_calls = {"count": 0}
-            rollback_fsync_failed = {"value": False}
-            rollback_armed = {"value": False}
-
-            nddev_mimocode.require_supported_product_host = lambda _host=None: None
-            def fake_status(_target: Path, **_kwargs: Any) -> dict[str, Any]:
-                status_calls["count"] += 1
-                return {"present": True, "installed": True, "current": status_calls["count"] > 1, "drift": []}
-
-            nddev_mimocode.software_status = fake_status
-            nddev_mimocode.selected_asset = lambda: ("test", {
-                "url": "https://example.invalid/test",
-                "sha256": hashlib.sha256(b"x").hexdigest(),
-                "size": 1,
-                "name": "test.tar.gz",
-            })
-            nddev_mimocode.read_url = lambda *_args, **_kwargs: b"x"
-            nddev_mimocode.extract_verified_binary = lambda *_args, **_kwargs: ("mimo", 0o755, new_binary)
-            nddev_mimocode.read_pinned_installer = lambda: (b"install", nddev_mimocode.INSTALLER_SHA256, nddev_mimocode.INSTALLER_URL, nddev_mimocode.INSTALLER_SIZE)
-            nddev_mimocode.run_official_installer = lambda *_args, **_kwargs: {
-                "binary": new_binary,
-                "binary_sha256": hashlib.sha256(new_binary).hexdigest(),
-                "installer_binary_mode": "0755",
-                "installer_source": nddev_mimocode.INSTALLER_URL,
-                "installer_sha256": nddev_mimocode.INSTALLER_SHA256,
-                "version_output": nddev_mimocode.TESTED_VERSION,
-            }
-
-            def failing_postcondition(target_arg: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str) -> None:
-                original_verify(target_arg, desired, label)
-                if label == "software install postcondition":
-                    rollback_armed["value"] = True
-                    raise nddev_mimocode.ConcurrentTargetChange("forced software postcondition failure")
-
-            def failing_rollback_parent_fsync(path: Path, label: str) -> None:
-                if rollback_armed["value"] and not rollback_fsync_failed["value"] and label.startswith("parent directory after rollback restore "):
-                    rollback_fsync_failed["value"] = True
-                    raise OSError("forced rollback parent fsync failure")
-                return original_fsync_directory(path, label)
-
-            nddev_mimocode.verify_software_state = failing_postcondition
-            nddev_mimocode.fsync_directory = failing_rollback_parent_fsync
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.install_or_update_cli(target, operation="update-cli"),
-                    nddev_mimocode.ConcurrentTargetChange,
-                    "software rollback one-shot parent fsync failure must re-raise original postcondition failure",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.require_supported_product_host = original_host
-                nddev_mimocode.software_status = original_status
-                nddev_mimocode.selected_asset = original_selected
-                nddev_mimocode.read_url = original_read_url
-                nddev_mimocode.extract_verified_binary = original_extract
-                nddev_mimocode.read_pinned_installer = original_installer
-                nddev_mimocode.run_official_installer = original_run_installer
-                nddev_mimocode.verify_software_state = original_verify
-                nddev_mimocode.fsync_directory = original_fsync_directory
-            require(rollback_fsync_failed["value"], "software rollback one-shot parent fsync fault was not exercised", errors)
-            require(software_identity_snapshot(target) == before_software, "software rollback one-shot parent fsync failure left mixed software objects", errors)
-            require_no_transaction_residue(target, "software rollback parent fsync failure left residue", errors)
-
-            for fault_kind in ("replace", "parent-fsync"):
-                target = (root / f"software-rollback-{fault_kind}").resolve()
-                make_fake_software(target, old_binary)
-                before_software = software_identity_snapshot(target)
-                before_software_payload = nddev_mimocode.current_software_snapshot(target)
-                desired_software = {
-                    nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME: (new_binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
-                    Path("bin") / nddev_mimocode.COMMAND_NAME: (new_binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
-                    nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE: (fake_software_manifest(new_binary, nddev_mimocode.TESTED_VERSION), nddev_mimocode.OWNER_FILE_MODE),
-                }
-                original_verify = nddev_mimocode.verify_software_state
-                original_replace = nddev_mimocode.os.replace
-                original_fsync_directory = nddev_mimocode.fsync_directory
-                rollback_armed = {"value": False}
-                rollback_failed = {"value": False}
-
-                def software_original_fails(target_arg: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str) -> None:
-                    original_verify(target_arg, desired, label)
-                    if label == "software test" and not rollback_armed["value"]:
-                        rollback_armed["value"] = True
-                        raise nddev_mimocode.ConcurrentTargetChange("forced software postcondition failure")
-
-                def one_shot_rollback_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
-                    if (
-                        rollback_armed["value"]
-                        and fault_kind == "replace"
-                        and not rollback_failed["value"]
-                        and Path(destination) == target / nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE
-                    ):
-                        rollback_failed["value"] = True
-                        raise OSError("forced software rollback replace failure")
-                    return original_replace(source, destination, *args, **kwargs)
-
-                def one_shot_rollback_parent_fsync(path: Path, label: str) -> None:
-                    if rollback_armed["value"] and fault_kind == "parent-fsync" and not rollback_failed["value"] and label.startswith("parent directory after rollback restore "):
-                        rollback_failed["value"] = True
-                        raise OSError("forced software rollback parent fsync failure")
-                    return original_fsync_directory(path, label)
-
-                nddev_mimocode.verify_software_state = software_original_fails
-                nddev_mimocode.os.replace = one_shot_rollback_replace
-                nddev_mimocode.fsync_directory = one_shot_rollback_parent_fsync
-                try:
-                    require_exception(
-                        lambda: nddev_mimocode.apply_software_state(
-                            target,
-                            desired_software,
-                            expected_before=before_software_payload,
-                            rollback_on_error=True,
-                            label="software test",
-                        ),
-                        nddev_mimocode.ConcurrentTargetChange,
-                        f"software rollback one-shot {fault_kind} failure must re-raise original failure",
-                        errors,
-                    )
-                finally:
-                    nddev_mimocode.verify_software_state = original_verify
-                    nddev_mimocode.os.replace = original_replace
-                    nddev_mimocode.fsync_directory = original_fsync_directory
-                require(rollback_failed["value"], f"software rollback one-shot {fault_kind} fault was not exercised", errors)
-                require(software_identity_snapshot(target) == before_software, f"software rollback one-shot {fault_kind} left mixed software objects", errors)
-                require_no_transaction_residue(target, f"software rollback one-shot {fault_kind} left residue", errors)
-
-            target = (root / "software-rollback-unlink").resolve()
-            target.mkdir(mode=0o700)
-            target.chmod(0o700)
-            before_empty = nddev_mimocode.current_software_snapshot(target)
-            desired_software = {
-                nddev_mimocode.SOFTWARE_VERSION_RELATIVE / nddev_mimocode.COMMAND_NAME: (new_binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
-                Path("bin") / nddev_mimocode.COMMAND_NAME: (new_binary, nddev_mimocode.OWNER_EXECUTABLE_MODE),
-                nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE: (fake_software_manifest(new_binary, nddev_mimocode.TESTED_VERSION), nddev_mimocode.OWNER_FILE_MODE),
-            }
-            original_verify = nddev_mimocode.verify_software_state
-            original_unlink = Path.unlink
-            rollback_armed = {"value": False}
-            rollback_failed = {"value": False}
-
-            def software_install_original_fails(target_arg: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str) -> None:
-                original_verify(target_arg, desired, label)
-                if label == "software install test" and not rollback_armed["value"]:
-                    rollback_armed["value"] = True
-                    raise nddev_mimocode.ConcurrentTargetChange("forced software install postcondition failure")
-
-            def one_shot_rollback_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
-                if rollback_armed["value"] and not rollback_failed["value"] and self == target / nddev_mimocode.SOFTWARE_MANIFEST_RELATIVE:
-                    rollback_failed["value"] = True
-                    raise OSError("forced software rollback unlink failure")
-                return original_unlink(self, *args, **kwargs)
-
-            nddev_mimocode.verify_software_state = software_install_original_fails
-            Path.unlink = one_shot_rollback_unlink
-            try:
-                require_exception(
-                    lambda: nddev_mimocode.apply_software_state(
-                        target,
-                        desired_software,
-                        expected_before=before_empty,
-                        rollback_on_error=True,
-                        label="software install test",
-                    ),
-                    nddev_mimocode.ConcurrentTargetChange,
-                    "software rollback one-shot unlink failure must re-raise original failure",
-                    errors,
-                )
-            finally:
-                nddev_mimocode.verify_software_state = original_verify
-                Path.unlink = original_unlink
-            require(rollback_failed["value"], "software rollback one-shot unlink fault was not exercised", errors)
-            require(nddev_mimocode.current_software_snapshot(target) == before_empty, "software rollback one-shot unlink left mixed state", errors)
-            require_no_transaction_residue(target, "software rollback one-shot unlink left residue", errors)
 
 
 def validate_state_transition_helpers(errors: list[str]) -> None:
@@ -2396,12 +2863,28 @@ def validate_state_transition_helpers(errors: list[str]) -> None:
             existing_config=preserved,
         )
         require(metadata["id"] == "nddev-builder", "migration setup metadata mismatch", errors)
-        rendered_config = json.loads(desired[nddev_mimocode.MIMOCODE_CONFIG_RELATIVE].decode("utf-8"))
-        require(rendered_config.get("custom_provider") == {"id": "preserved"}, "rendered migration config lost custom_provider", errors)
-        require(rendered_config.get("user_note") == "preserved", "rendered migration config lost user_note", errors)
-        require("disabled_providers" not in rendered_config, "rendered migration config kept legacy managed key", errors)
+        rendered_config = json.loads(
+            desired[nddev_mimocode.MIMOCODE_CONFIG_RELATIVE].decode("utf-8")
+        )
+        require(
+            rendered_config.get("custom_provider") == {"id": "preserved"},
+            "rendered migration config lost custom_provider",
+            errors,
+        )
+        require(
+            rendered_config.get("user_note") == "preserved",
+            "rendered migration config lost user_note",
+            errors,
+        )
+        require(
+            "disabled_providers" not in rendered_config,
+            "rendered migration config kept legacy managed key",
+            errors,
+        )
         require_manager_failure(
-            lambda: nddev_mimocode.preserved_legacy_config_for_migration(target, {"state": "managed"}),
+            lambda: nddev_mimocode.preserved_legacy_config_for_migration(
+                target, {"state": "managed"}
+            ),
             "legacy preservation helper must reject non-legacy state",
             errors,
         )
@@ -2411,14 +2894,28 @@ def validate_state_transition_helpers(errors: list[str]) -> None:
             Path("config") / "mimocode.json": b'{"legacy":true}\n',
         }
         restored = nddev_mimocode.restore_desired_from_backup(backup_files)
-        require(set(restored) == set(nddev_mimocode.ALL_MANAGED_PATHS), "restore desired must cover all known managed paths", errors)
+        require(
+            set(restored) == set(nddev_mimocode.ALL_MANAGED_PATHS),
+            "restore desired must cover all known managed paths",
+            errors,
+        )
         for relative in nddev_mimocode.ALL_MANAGED_PATHS:
             if relative in backup_files:
-                require(restored[relative] == backup_files[relative], f"restore desired missing backup file: {relative}", errors)
+                require(
+                    restored[relative] == backup_files[relative],
+                    f"restore desired missing backup file: {relative}",
+                    errors,
+                )
             else:
-                require(restored[relative] is None, f"restore desired must remove absent managed file: {relative}", errors)
+                require(
+                    restored[relative] is None,
+                    f"restore desired must remove absent managed file: {relative}",
+                    errors,
+                )
         require_manager_failure(
-            lambda: nddev_mimocode.restore_desired_from_backup({Path("unknown") / "managed.json": b"{}"}),
+            lambda: nddev_mimocode.restore_desired_from_backup(
+                {Path("unknown") / "managed.json": b"{}"}
+            ),
             "restore desired must reject unsupported backup paths",
             errors,
         )
@@ -2432,25 +2929,49 @@ def validate_state_transition_helpers(errors: list[str]) -> None:
         with tempfile.TemporaryDirectory(prefix="nddev-mimocode-legacy-plan.") as raw:
             target = make_legacy_target(Path(raw))
             before_snapshot = nddev_mimocode.current_managed_snapshot(target)
-            require_manager_failure(lambda: nddev_mimocode.update_setup(target), "setup update must reject legacy managed targets before migrate", errors)
+            require_manager_failure(
+                lambda: nddev_mimocode.update_setup(target),
+                "setup update must reject legacy managed targets before migrate",
+                errors,
+            )
             plan = nddev_mimocode.plan_setup(target, "nddev-builder", "safe")
             after_plan_snapshot = nddev_mimocode.current_managed_snapshot(target)
-            require(after_plan_snapshot == before_snapshot, "legacy plan must not mutate managed state", errors)
+            require(
+                after_plan_snapshot == before_snapshot,
+                "legacy plan must not mutate managed state",
+                errors,
+            )
             require(plan.get("operation") == "migrate", "legacy plan operation mismatch", errors)
             require(plan.get("backup_required") is True, "legacy plan backup flag mismatch", errors)
             migrated = nddev_mimocode.migrate_setup(target, "safe")
-            require(plan.get("changed") == migrated.get("changed"), "legacy plan changed paths must exactly match migrate", errors)
+            require(
+                plan.get("changed") == migrated.get("changed"),
+                "legacy plan changed paths must exactly match migrate",
+                errors,
+            )
             migrated_config = nddev_mimocode.load_json_object(
                 target / nddev_mimocode.MIMOCODE_CONFIG_RELATIVE,
                 "migrated config",
                 owner_only=True,
             )
-            require(migrated_config.get("custom_provider") == {"id": "preserved"}, "legacy migrate lost custom_provider", errors)
-            require(migrated_config.get("user_note") == "preserved", "legacy migrate lost user_note", errors)
+            require(
+                migrated_config.get("custom_provider") == {"id": "preserved"},
+                "legacy migrate lost custom_provider",
+                errors,
+            )
+            require(
+                migrated_config.get("user_note") == "preserved",
+                "legacy migrate lost user_note",
+                errors,
+            )
             for legacy_path in nddev_mimocode.LEGACY_MANAGED_PATHS:
                 if legacy_path in nddev_mimocode.MANAGED_PATHS:
                     continue
-                require(not nddev_mimocode.path_present(target / legacy_path), f"legacy migrate left removed path: {legacy_path}", errors)
+                require(
+                    not nddev_mimocode.path_present(target / legacy_path),
+                    f"legacy migrate left removed path: {legacy_path}",
+                    errors,
+                )
 
 
 def validate_dual_locks(errors: list[str]) -> None:
@@ -2466,16 +2987,37 @@ def validate_dual_locks(errors: list[str]) -> None:
                 require(canonical == target.resolve(), "locked target canonical mismatch", errors)
                 external = nddev_mimocode.bootstrap_lock_path(target)
                 internal = nddev_mimocode.lock_path(canonical)
-                require(str(external).startswith(str(injected)), "external lock used real system root", errors)
+                require(
+                    str(external).startswith(str(injected)),
+                    "external lock used real system root",
+                    errors,
+                )
                 require(external.exists(), "external lock missing", errors)
                 require(internal.exists(), "internal lock missing", errors)
-                require(stat.S_IMODE(external.lstat().st_mode) == 0o600, "external lock mode mismatch", errors)
-                require(stat.S_IMODE(internal.lstat().st_mode) == 0o600, "internal lock mode mismatch", errors)
-                require(stat.S_IMODE(nddev_mimocode.lock_directory_path(canonical).lstat().st_mode) == 0o500, "internal lock directory not protected while held", errors)
+                require(
+                    stat.S_IMODE(external.lstat().st_mode) == 0o600,
+                    "external lock mode mismatch",
+                    errors,
+                )
+                require(
+                    stat.S_IMODE(internal.lstat().st_mode) == 0o600,
+                    "internal lock mode mismatch",
+                    errors,
+                )
+                require(
+                    stat.S_IMODE(nddev_mimocode.lock_directory_path(canonical).lstat().st_mode)
+                    == 0o500,
+                    "internal lock directory not protected while held",
+                    errors,
+                )
             require(external.exists(), "external lock must persist after release", errors)
             require(internal.exists(), "internal lock must persist after release", errors)
             binding = json.loads(external.read_text(encoding="utf-8"))
-            require(binding.get("canonical_target") == str(target.resolve()), "external lock binding mismatch", errors)
+            require(
+                binding.get("canonical_target") == str(target.resolve()),
+                "external lock binding mismatch",
+                errors,
+            )
 
 
 def folded_value(text: str, key: str) -> list[str]:
@@ -2494,7 +3036,6 @@ def folded_value(text: str, key: str) -> list[str]:
 
 def mapping_keys_after(text: str, marker: str, indent: int) -> dict[str, str]:
     lines = text.splitlines()
-    prefix = " " * indent
     result: dict[str, str] = {}
     for index, line in enumerate(lines):
         if line == marker:
@@ -2535,14 +3076,20 @@ def validate_release_archive(errors: list[str]) -> None:
         "release shared workflow pin mismatch",
         errors,
     )
-    require(mapping_keys_after(workflow, "    permissions:", 4) == REQUIRED_RELEASE_PERMISSIONS, "release permissions keys must be closed", errors)
+    require(
+        mapping_keys_after(workflow, "    permissions:", 4) == REQUIRED_RELEASE_PERMISSIONS,
+        "release permissions keys must be closed",
+        errors,
+    )
     with_values = mapping_keys_after(workflow, "    with:", 4)
     require(set(with_values) == REQUIRED_RELEASE_INPUTS, "release with keys must be closed", errors)
     archive_paths = folded_value(workflow, "archive_paths")
     runtime_paths = folded_value(workflow, "runtime_paths")
     require(archive_paths == RELEASE_ARCHIVE_PATHS, "release archive paths mismatch", errors)
     require(runtime_paths == RELEASE_RUNTIME_PATHS, "release runtime paths mismatch", errors)
-    require(set(runtime_paths) <= set(archive_paths), "runtime paths must be archive subset", errors)
+    require(
+        set(runtime_paths) <= set(archive_paths), "runtime paths must be archive subset", errors
+    )
     for raw in archive_paths:
         path = ROOT / raw
         try:
@@ -2550,8 +3097,16 @@ def validate_release_archive(errors: list[str]) -> None:
         except FileNotFoundError:
             errors.append(f"declared archive path missing: {raw}")
             continue
-        require(not stat.S_ISLNK(info.st_mode), f"declared archive path must not be symlink: {raw}", errors)
-    require(REQUIRED_CONTRACT_ROOTS <= {path.split("/", 1)[0] for path in archive_paths}, "required source roots missing from archive", errors)
+        require(
+            not stat.S_ISLNK(info.st_mode),
+            f"declared archive path must not be symlink: {raw}",
+            errors,
+        )
+    require(
+        REQUIRED_CONTRACT_ROOTS <= {path.split("/", 1)[0] for path in archive_paths},
+        "required source roots missing from archive",
+        errors,
+    )
     files = relative_files()
     for raw in files:
         require(
@@ -2565,7 +3120,11 @@ def validate_builder_references(errors: list[str]) -> None:
     builder_root = ROOT / "plugins" / "nddev-builder"
     require(builder_root.is_dir(), "builder root missing", errors)
     source_targets = {str(target) for _source, target in nddev_mimocode.BUILDER_SOURCE_FILES}
-    require(any("skills/nddev-builder/SKILL.md" in item for item in source_targets), "builder skill projection missing", errors)
+    require(
+        any("skills/nddev-builder/SKILL.md" in item for item in source_targets),
+        "builder skill projection missing",
+        errors,
+    )
     for path in sorted(builder_root.rglob("*.md")):
         relative = path.relative_to(ROOT)
         text = path.read_text(encoding="utf-8")
@@ -2614,7 +3173,6 @@ def main() -> int:
     validate_launch_environment(errors)
     validate_project_boundary(errors)
     validate_replace_managed_state_cleanup(errors)
-    validate_transaction_faults(errors)
     validate_state_transition_helpers(errors)
     validate_dual_locks(errors)
     validate_release_archive(errors)

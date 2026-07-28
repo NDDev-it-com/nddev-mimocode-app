@@ -44,6 +44,9 @@ LOCK_DIRECTORY_NAME = ".nddev-mimocode-lock"
 LOCK_FILE_NAME = "lock"
 POSTCOMMIT_CLEANUP_DIRECTORY_NAME = ".nddev-mimocode-cleanup"
 POSTCOMMIT_CLEANUP_JOURNAL_NAME = "NDDEV-MIMOCODE-CLEANUP.json"
+PRECOMMIT_RECOVERY_DIRECTORY_NAME = ".nddev-mimocode-recovery"
+PRECOMMIT_RECOVERY_INTENT_PREFIX = "NDDEV-MIMOCODE-RECOVERY."
+PRECOMMIT_RECOVERY_INTENT_SUFFIX = ".json"
 BOOTSTRAP_GLOBAL_LOCK_NAME = "global.lock"
 BOOTSTRAP_LOCK_SUFFIX = ".lock"
 BASELINE_REF = ROOT / "references" / "mimocode-baseline.json"
@@ -197,6 +200,40 @@ POSTCOMMIT_CLEANUP_MAX_ENTRIES = 8
 POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS = 4096
 POSTCOMMIT_CLEANUP_MAX_RELATIVE_BYTES = 256
 POSTCOMMIT_CLEANUP_JOURNAL_MAX_BYTES = 4 * 1024 * 1024
+PRECOMMIT_RECOVERY_MAX_INTENTS = 8
+PRECOMMIT_RECOVERY_MAX_ENTRIES = 64
+PRECOMMIT_RECOVERY_INTENT_MAX_BYTES = 4 * 1024 * 1024
+PRECOMMIT_RECOVERY_INTENT_KEYS = {
+    "schema_version",
+    "product_name",
+    "build_version",
+    "canonical_target",
+    "recovery_parent",
+    "transaction_id",
+    "operation",
+    "moves",
+    "generated_paths",
+    "directory_snapshot",
+    "created_directory_candidates",
+}
+PRECOMMIT_RECOVERY_MOVE_KEYS = {
+    "source_relative",
+    "stash_relative",
+    "label",
+    "present",
+    "kind",
+    "uid",
+    "mode",
+    "nlink",
+    "dev",
+    "ino",
+    "size",
+    "mtime_ns",
+    "tree_sha256",
+    "tree",
+}
+PRECOMMIT_RECOVERY_GENERATED_KEYS = {"relative_path", "label", "kind"}
+PRECOMMIT_RECOVERY_DIRECTORY_KEYS = {"relative_path", "mode", "dev", "ino", "mtime_ns"}
 BOOTSTRAP_GLOBAL_LOCK_KEYS = {"schema_version", "product_name", "anchor"}
 BOOTSTRAP_LOCK_KEYS = {"schema_version", "product_name", "canonical_target", "target_key"}
 TOKEN_ENV_NAMES = {
@@ -356,6 +393,10 @@ class ConcurrentTargetChange(MiMoCodeSetupError):
     """A fail-closed target race."""
 
 
+class CommittedLifecycleError(MiMoCodeSetupError):
+    """A post-commit failure that must not enter active-state rollback."""
+
+
 class RetryBootstrapInspection(Exception):
     """Internal signal for a cold read racing a newly published product anchor."""
 
@@ -411,6 +452,10 @@ def staged_file_path(path: Path) -> Path:
 
 def create_staged_file(path: Path, content: bytes, mode: int) -> Path:
     temporary = staged_file_path(path)
+    return create_staged_file_at(temporary, content, mode)
+
+
+def create_staged_file_at(temporary: Path, content: bytes, mode: int) -> Path:
     descriptor = -1
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
@@ -491,7 +536,9 @@ def cleanup_path_once(path: Path) -> None:
         unlink_file_durable(path)
 
 
-def cleanup_path_with_retries(path: Path, *, attempts: int = 3, raise_on_failure: bool = False) -> None:
+def cleanup_path_with_retries(
+    path: Path, *, attempts: int = 3, raise_on_failure: bool = False
+) -> None:
     last: BaseException | None = None
     for _attempt in range(attempts):
         try:
@@ -506,19 +553,23 @@ def cleanup_path_with_retries(path: Path, *, attempts: int = 3, raise_on_failure
 def cleanup_transaction_residue(target: Path) -> None:
     if not path_present(target):
         return
+    residues: list[str] = []
     for path in sorted(target.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        name = path.name
-        if (
-            ".nddev.tmp." in name
-            or ".stage." in name
-            or ".rollback." in name
-            or ".retired." in name
-            or ".recovery." in name
-        ):
-            cleanup_path_with_retries(path)
+        relative = path.relative_to(target)
+        if relative.parts and relative.parts[0] in {
+            POSTCOMMIT_CLEANUP_DIRECTORY_NAME,
+            PRECOMMIT_RECOVERY_DIRECTORY_NAME,
+        }:
+            continue
+        if is_transaction_residue_path(relative):
+            residues.append(str(relative))
+    if residues:
+        fail(f"target contains unjournaled transaction residue: {', '.join(sorted(residues))}")
 
 
 def is_transaction_residue_path(path: Path) -> bool:
+    if path.parts and path.parts[0] == PRECOMMIT_RECOVERY_DIRECTORY_NAME:
+        return True
     return any(
         ".nddev.tmp." in part
         or ".stage." in part
@@ -527,6 +578,88 @@ def is_transaction_residue_path(path: Path) -> bool:
         or ".recovery." in part
         for part in path.parts
     )
+
+
+def recovery_directory(target: Path) -> Path:
+    return target / PRECOMMIT_RECOVERY_DIRECTORY_NAME
+
+
+def recovery_intent_name(transaction_id: str) -> str:
+    return f"{PRECOMMIT_RECOVERY_INTENT_PREFIX}{transaction_id}{PRECOMMIT_RECOVERY_INTENT_SUFFIX}"
+
+
+def recovery_intent_path(target: Path, transaction_id: str) -> Path:
+    return recovery_directory(target) / recovery_intent_name(transaction_id)
+
+
+def is_recovery_intent_name(name: str) -> bool:
+    if not name.startswith(PRECOMMIT_RECOVERY_INTENT_PREFIX) or not name.endswith(
+        PRECOMMIT_RECOVERY_INTENT_SUFFIX
+    ):
+        return False
+    body = name[len(PRECOMMIT_RECOVERY_INTENT_PREFIX) : -len(PRECOMMIT_RECOVERY_INTENT_SUFFIX)]
+    parts = body.split(".")
+    return len(parts) == 2 and all(part.isdecimal() and part for part in parts)
+
+
+def is_recovery_publication_alias(path: Path, final_path: Path) -> bool:
+    return path.parent == final_path.parent and is_cleanup_publication_alias(path, final_path)
+
+
+def require_recovery_relative(relative: Path, label: str, *, allow_dot: bool = False) -> str:
+    return bounded_relative_text(relative, label, allow_dot=allow_dot)
+
+
+def recovery_directory_records(snapshot: DirectoryObjectSnapshot) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for relative, record in sorted(snapshot.items(), key=lambda item: str(item[0])):
+        records.append(
+            {
+                "relative_path": require_recovery_relative(
+                    relative, "recovery directory snapshot", allow_dot=True
+                ),
+                "mode": record["mode"],
+                "dev": record["dev"],
+                "ino": record["ino"],
+                "mtime_ns": record["mtime_ns"],
+            }
+        )
+    return records
+
+
+def directory_snapshot_from_recovery_records(
+    records: list[dict[str, Any]],
+) -> DirectoryObjectSnapshot:
+    result: DirectoryObjectSnapshot = {}
+    for record in records:
+        require_exact_keys(
+            record, PRECOMMIT_RECOVERY_DIRECTORY_KEYS, "pre-commit recovery directory record"
+        )
+        relative = Path(record["relative_path"])
+        require_recovery_relative(relative, "pre-commit recovery directory record", allow_dot=True)
+        for key in ("mode", "dev", "ino", "mtime_ns"):
+            if not isinstance(record[key], int) or record[key] < 0:
+                fail(f"pre-commit recovery directory record {key} must be a non-negative integer")
+        result[relative] = {
+            "mode": record["mode"],
+            "dev": record["dev"],
+            "ino": record["ino"],
+            "mtime_ns": record["mtime_ns"],
+        }
+    return result
+
+
+def parent_candidates_for(paths: tuple[Path, ...]) -> list[str]:
+    candidates: set[Path] = set()
+    for relative in paths:
+        parent = relative.parent
+        while parent not in {Path("."), Path("")}:
+            candidates.add(parent)
+            parent = parent.parent
+    return [
+        require_recovery_relative(path, "pre-commit recovery parent candidate")
+        for path in sorted(candidates, key=lambda item: (len(item.parts), str(item)), reverse=True)
+    ]
 
 
 FileObjectRecord = dict[str, Any]
@@ -540,14 +673,18 @@ def absent_file_object() -> FileObjectRecord:
     return {"present": False}
 
 
-def file_object_record(path: Path, label: str, *, owner_only: bool, max_bytes: int) -> FileObjectRecord:
+def file_object_record(
+    path: Path, label: str, *, owner_only: bool, max_bytes: int
+) -> FileObjectRecord:
     if not path_present(path):
         return absent_file_object()
     content, info = read_regular_file(path, label, owner_only=owner_only, max_bytes=max_bytes)
     return {
         "present": True,
         "content": content,
+        "uid": owner_of(info),
         "mode": stat.S_IMODE(info.st_mode),
+        "nlink": info.st_nlink,
         "dev": info.st_dev,
         "ino": info.st_ino,
         "mtime_ns": info.st_mtime_ns,
@@ -604,7 +741,9 @@ def directory_metadata_record(path: Path, label: str) -> DirectoryMetadataRecord
     }
 
 
-def restore_directory_metadata_record(path: Path, record: DirectoryMetadataRecord, label: str) -> None:
+def restore_directory_metadata_record(
+    path: Path, record: DirectoryMetadataRecord, label: str
+) -> None:
     last: BaseException | None = None
     for _attempt in range(3):
         try:
@@ -640,7 +779,9 @@ def directory_object_snapshot(target: Path) -> DirectoryObjectSnapshot:
     directories = [
         item
         for item in target.rglob("*")
-        if item.is_dir() and not item.is_symlink() and not is_transaction_residue_path(item.relative_to(target))
+        if item.is_dir()
+        and not item.is_symlink()
+        and not is_transaction_residue_path(item.relative_to(target))
     ]
     for path in [target, *sorted(directories, key=lambda entry: str(entry.relative_to(target)))]:
         relative = Path(".") if path == target else path.relative_to(target)
@@ -648,12 +789,494 @@ def directory_object_snapshot(target: Path) -> DirectoryObjectSnapshot:
     return result
 
 
-def restore_directory_object_snapshot(target: Path, snapshot: DirectoryObjectSnapshot, label: str) -> None:
-    for relative, record in sorted(snapshot.items(), key=lambda item: len(item[0].parts), reverse=True):
+def restore_directory_object_snapshot(
+    target: Path, snapshot: DirectoryObjectSnapshot, label: str
+) -> None:
+    for relative, record in sorted(
+        snapshot.items(), key=lambda item: len(item[0].parts), reverse=True
+    ):
         path = target if relative == Path(".") else target / relative
         restore_directory_metadata_record(path, record, f"{label} directory {relative}")
     if path_present(target):
         fsync_directory_with_retries(target, f"{label} target directory after metadata restore")
+
+
+def recovery_transaction_id() -> str:
+    return f"{os.getpid()}.{time.time_ns()}"
+
+
+def recovery_tree_for_file_record(record: FileObjectRecord) -> list[dict[str, Any]]:
+    return [
+        {
+            "relative_path": ".",
+            "kind": "file",
+            "uid": record["uid"],
+            "mode": record["mode"],
+            "nlink": record["nlink"],
+            "dev": record["dev"],
+            "ino": record["ino"],
+            "size": record["size"],
+            "mtime_ns": record["mtime_ns"],
+            "sha256": sha256_bytes(record["content"]),
+        }
+    ]
+
+
+def recovery_absent_move_entry(source_relative: Path, label: str) -> dict[str, Any]:
+    return {
+        "source_relative": require_recovery_relative(source_relative, "pre-commit recovery source"),
+        "stash_relative": None,
+        "label": label,
+        "present": False,
+        "kind": "absent",
+        "uid": None,
+        "mode": None,
+        "nlink": None,
+        "dev": None,
+        "ino": None,
+        "size": None,
+        "mtime_ns": None,
+        "tree_sha256": None,
+        "tree": [],
+    }
+
+
+def recovery_move_entry_for_file(
+    source_relative: Path,
+    stash_relative: Path,
+    label: str,
+    record: FileObjectRecord,
+) -> dict[str, Any]:
+    tree = recovery_tree_for_file_record(record)
+    return {
+        "source_relative": require_recovery_relative(source_relative, "pre-commit recovery source"),
+        "stash_relative": require_recovery_relative(stash_relative, "pre-commit recovery stash"),
+        "label": label,
+        "present": True,
+        "kind": "file",
+        "uid": record["uid"],
+        "mode": record["mode"],
+        "nlink": record["nlink"],
+        "dev": record["dev"],
+        "ino": record["ino"],
+        "size": record["size"],
+        "mtime_ns": record["mtime_ns"],
+        "tree_sha256": cleanup_tree_digest(tree),
+        "tree": tree,
+    }
+
+
+def recovery_move_entry_for_directory(
+    source: Path, stash_relative: Path, target: Path, label: str
+) -> dict[str, Any]:
+    source_relative = source.relative_to(target)
+    tree = cleanup_tree_records(source)
+    root = tree[0]
+    return {
+        "source_relative": require_recovery_relative(source_relative, "pre-commit recovery source"),
+        "stash_relative": require_recovery_relative(stash_relative, "pre-commit recovery stash"),
+        "label": label,
+        "present": True,
+        "kind": "dir",
+        "uid": root["uid"],
+        "mode": root["mode"],
+        "nlink": root["nlink"],
+        "dev": root["dev"],
+        "ino": root["ino"],
+        "size": root["size"],
+        "mtime_ns": root["mtime_ns"],
+        "tree_sha256": cleanup_tree_digest(tree),
+        "tree": tree,
+    }
+
+
+def recovery_generated_entry(relative: Path, label: str, kind: str = "tree") -> dict[str, Any]:
+    if kind not in {"file", "dir", "tree"}:
+        fail("pre-commit recovery generated entry kind is invalid")
+    return {
+        "relative_path": require_recovery_relative(relative, "pre-commit recovery generated path"),
+        "label": label,
+        "kind": kind,
+    }
+
+
+def recovery_path_matches_tree(path: Path, tree: list[dict[str, Any]], label: str) -> bool:
+    if not path_present(path):
+        return False
+    if not tree:
+        return False
+    expected = {Path(record["relative_path"]): record for record in tree}
+    if tree[0]["kind"] == "file":
+        try:
+            current = cleanup_record_for_path(path, Path("."), label)
+        except MiMoCodeSetupError:
+            return False
+        return expected == {Path("."): current}
+    try:
+        current = cleanup_current_tree_records(path)
+    except MiMoCodeSetupError:
+        return False
+    return current == expected
+
+
+def validate_generated_recovery_tree(path: Path, label: str) -> None:
+    if not path_present(path):
+        return
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        fail(f"{label} must not be a symlink")
+    if not is_current_user_owned(info):
+        fail(f"{label} must be owned by the current user")
+    if stat.S_ISREG(info.st_mode):
+        if info.st_nlink != 1:
+            fail(f"{label} must not have hard-link aliases")
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        fail(f"{label} has unsupported object kind")
+    records = cleanup_current_tree_records(path)
+    if len(records) > POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS:
+        fail(f"{label} exceeds bounded recovery tree size")
+
+
+def cleanup_generated_recovery_path(path: Path, label: str) -> None:
+    if not path_present(path):
+        return
+    validate_generated_recovery_tree(path, label)
+    cleanup_path_with_retries(path, raise_on_failure=True)
+
+
+def remove_created_recovery_parent_dirs(target: Path, raw_candidates: list[str]) -> None:
+    for raw in raw_candidates:
+        relative = Path(raw)
+        require_recovery_relative(relative, "pre-commit recovery created directory")
+        path = target / relative
+        if not path_present(path):
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            fail(f"pre-commit recovery created directory changed kind: {relative}")
+        try:
+            rmdir_if_empty_durable(path)
+        except OSError:
+            continue
+
+
+def publish_recovery_intent_no_replace(path: Path, content: bytes) -> None:
+    if len(content) > PRECOMMIT_RECOVERY_INTENT_MAX_BYTES:
+        fail("pre-commit recovery intent exceeds the metadata size limit")
+    temporary = staged_file_path(path)
+    descriptor = -1
+    linked = False
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, OWNER_FILE_MODE)
+        os.fchmod(descriptor, OWNER_FILE_MODE)
+        write_all(descriptor, content)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            cleanup_path_with_retries(temporary, raise_on_failure=True)
+            fail("pre-commit recovery intent already exists")
+        linked = True
+        cleanup_path_with_retries(temporary, raise_on_failure=True)
+        fsync_directory_with_retries(
+            path.parent, "pre-commit recovery directory after intent publish"
+        )
+        loaded = read_recovery_intent_file(path, allow_publication_alias=False)
+        if loaded != parse_json_object(content, "pre-commit recovery intent"):
+            fail_concurrent("pre-commit recovery intent changed during publication")
+    except BaseException:
+        if descriptor >= 0:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        if not linked:
+            cleanup_path_with_retries(temporary)
+        raise
+
+
+def read_recovery_intent_file(path: Path, *, allow_publication_alias: bool) -> dict[str, Any]:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        fail("pre-commit recovery intent is missing")
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        fail("pre-commit recovery intent must be a regular non-symlink file")
+    if not is_owner_only_file(before):
+        fail("pre-commit recovery intent must be owned by the current user with mode 0600")
+    if before.st_size > PRECOMMIT_RECOVERY_INTENT_MAX_BYTES:
+        fail("pre-commit recovery intent exceeds the metadata size limit")
+    if before.st_nlink not in ({1, 2} if allow_publication_alias else {1}):
+        fail("pre-commit recovery intent publication is incomplete")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            fail("pre-commit recovery intent must not be a symlink")
+        fail(f"cannot open pre-commit recovery intent: {exc}")
+    try:
+        opened = os.fstat(descriptor)
+        if identity_of(opened) != identity_of(before):
+            fail_concurrent("pre-commit recovery intent changed while being opened")
+        if not stat.S_ISREG(opened.st_mode) or not is_owner_only_file(opened):
+            fail("pre-commit recovery intent changed to an unsafe file")
+        if opened.st_nlink not in ({1, 2} if allow_publication_alias else {1}):
+            fail("pre-commit recovery intent publication is incomplete")
+        size = os.lseek(descriptor, 0, os.SEEK_END)
+        if size > PRECOMMIT_RECOVERY_INTENT_MAX_BYTES:
+            fail("pre-commit recovery intent exceeds the metadata size limit")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        content = os.read(descriptor, size)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    final = path.lstat()
+    if identity_of(after) != identity_of(before) or identity_of(final) != identity_of(before):
+        fail_concurrent("pre-commit recovery intent changed while being read")
+    return parse_json_object(content, "pre-commit recovery intent")
+
+
+def recover_recovery_intent_publication_alias(path: Path) -> None:
+    info = path.lstat()
+    if info.st_nlink == 1:
+        return
+    aliases: list[Path] = []
+    unknown: list[Path] = []
+    for child in sorted(path.parent.iterdir(), key=lambda item: item.name):
+        if child == path:
+            continue
+        try:
+            child_info = child.lstat()
+        except FileNotFoundError:
+            continue
+        if identity_of(child_info) != identity_of(info):
+            continue
+        if is_recovery_publication_alias(child, path):
+            aliases.append(child)
+        else:
+            unknown.append(child)
+    if unknown or len(aliases) != 1:
+        fail(
+            "pre-commit recovery intent must have exactly one bounded publication alias before recovery"
+        )
+    unlink_file_durable(aliases[0])
+    require_regular_file(
+        path,
+        "pre-commit recovery intent",
+        owner_only=True,
+        max_bytes=PRECOMMIT_RECOVERY_INTENT_MAX_BYTES,
+    )
+
+
+def validate_recovery_move(
+    entry: Any, seen_sources: set[Path], seen_stashes: set[Path]
+) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        fail("pre-commit recovery move must be an object")
+    require_exact_keys(entry, PRECOMMIT_RECOVERY_MOVE_KEYS, "pre-commit recovery move")
+    if not isinstance(entry["source_relative"], str) or not isinstance(entry["label"], str):
+        fail("pre-commit recovery move has invalid value types")
+    source = Path(entry["source_relative"])
+    require_recovery_relative(source, "pre-commit recovery source")
+    if source in seen_sources:
+        fail("pre-commit recovery intent contains duplicate source paths")
+    seen_sources.add(source)
+    present = entry["present"]
+    if not isinstance(present, bool):
+        fail("pre-commit recovery move present flag must be boolean")
+    if not present:
+        for key in (
+            "stash_relative",
+            "uid",
+            "mode",
+            "nlink",
+            "dev",
+            "ino",
+            "size",
+            "mtime_ns",
+            "tree_sha256",
+        ):
+            if entry[key] is not None:
+                fail("absent pre-commit recovery move must not carry object metadata")
+        if entry["kind"] != "absent" or entry["tree"] != []:
+            fail("absent pre-commit recovery move has invalid body")
+        return entry
+    if entry["kind"] not in {"file", "dir"}:
+        fail("pre-commit recovery move kind is invalid")
+    if not isinstance(entry["stash_relative"], str):
+        fail("pre-commit recovery stash path must be a string")
+    stash = Path(entry["stash_relative"])
+    require_recovery_relative(stash, "pre-commit recovery stash")
+    if stash in seen_stashes:
+        fail("pre-commit recovery intent contains duplicate stash paths")
+    seen_stashes.add(stash)
+    for key in ("mode", "nlink", "dev", "ino", "size", "mtime_ns"):
+        if not isinstance(entry[key], int) or entry[key] < 0:
+            fail(f"pre-commit recovery move {key} must be a non-negative integer")
+    if entry["uid"] is not None and (not isinstance(entry["uid"], int) or entry["uid"] < 0):
+        fail("pre-commit recovery move uid must be a non-negative integer or null")
+    tree = entry["tree"]
+    if not isinstance(tree, list) or not tree or len(tree) > POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS:
+        fail("pre-commit recovery move tree has an invalid bound")
+    validated_tree = [
+        validate_cleanup_tree_record(record, "pre-commit recovery move tree record")
+        for record in tree
+    ]
+    if validated_tree[0]["relative_path"] != ".":
+        fail("pre-commit recovery move tree must start at the moved object")
+    root = validated_tree[0]
+    for key in ("kind", "uid", "mode", "nlink", "dev", "ino", "size", "mtime_ns"):
+        if entry[key] != root[key]:
+            fail(f"pre-commit recovery move root {key} mismatch")
+    if entry["tree_sha256"] != cleanup_tree_digest(validated_tree):
+        fail("pre-commit recovery move tree digest mismatch")
+    return entry
+
+
+def validate_recovery_intent(intent: dict[str, Any], target: Path) -> dict[str, Any]:
+    require_exact_keys(intent, PRECOMMIT_RECOVERY_INTENT_KEYS, "pre-commit recovery intent")
+    if (
+        intent["schema_version"] != 1
+        or intent["product_name"] != PRODUCT_NAME
+        or intent["build_version"] != VERSION
+        or intent["canonical_target"] != str(target)
+        or intent["recovery_parent"] != str(recovery_directory(target))
+    ):
+        fail("pre-commit recovery intent is not bound to this target")
+    if not isinstance(intent["transaction_id"], str) or not is_recovery_intent_name(
+        recovery_intent_name(intent["transaction_id"])
+    ):
+        fail("pre-commit recovery intent transaction id is invalid")
+    if not isinstance(intent["operation"], str) or not intent["operation"]:
+        fail("pre-commit recovery intent operation is invalid")
+    moves = intent["moves"]
+    generated = intent["generated_paths"]
+    directory_records = intent["directory_snapshot"]
+    created_dirs = intent["created_directory_candidates"]
+    if not isinstance(moves, list) or not isinstance(generated, list):
+        fail("pre-commit recovery intent entries must be lists")
+    if len(moves) + len(generated) > PRECOMMIT_RECOVERY_MAX_ENTRIES:
+        fail("pre-commit recovery intent exceeds its entry bound")
+    seen_sources: set[Path] = set()
+    seen_stashes: set[Path] = set()
+    for entry in moves:
+        validate_recovery_move(entry, seen_sources, seen_stashes)
+    seen_generated: set[Path] = set()
+    for entry in generated:
+        if not isinstance(entry, dict):
+            fail("pre-commit recovery generated entry must be an object")
+        require_exact_keys(
+            entry, PRECOMMIT_RECOVERY_GENERATED_KEYS, "pre-commit recovery generated entry"
+        )
+        if not isinstance(entry["relative_path"], str) or not isinstance(entry["label"], str):
+            fail("pre-commit recovery generated entry has invalid value types")
+        if entry["kind"] not in {"file", "dir", "tree"}:
+            fail("pre-commit recovery generated entry kind is invalid")
+        relative = Path(entry["relative_path"])
+        require_recovery_relative(relative, "pre-commit recovery generated path")
+        if relative in seen_generated:
+            fail("pre-commit recovery generated entry contains duplicate paths")
+        seen_generated.add(relative)
+    if not isinstance(directory_records, list):
+        fail("pre-commit recovery directory snapshot must be a list")
+    directory_snapshot_from_recovery_records(directory_records)
+    if not isinstance(created_dirs, list) or not all(
+        isinstance(item, str) for item in created_dirs
+    ):
+        fail("pre-commit recovery created directory candidates must be a string list")
+    for raw in created_dirs:
+        require_recovery_relative(Path(raw), "pre-commit recovery created directory")
+    return intent
+
+
+class PrecommitRecoveryIntent:
+    def __init__(
+        self,
+        target: Path,
+        operation: str,
+        *,
+        moves: list[dict[str, Any]] | None = None,
+        generated_paths: list[dict[str, Any]] | None = None,
+        directory_snapshot: DirectoryObjectSnapshot | None = None,
+        created_directory_candidates: list[str] | None = None,
+    ) -> None:
+        self.target = target
+        self.transaction_id = recovery_transaction_id()
+        self.path = recovery_intent_path(target, self.transaction_id)
+        self.intent = {
+            "schema_version": 1,
+            "product_name": PRODUCT_NAME,
+            "build_version": VERSION,
+            "canonical_target": str(target),
+            "recovery_parent": str(recovery_directory(target)),
+            "transaction_id": self.transaction_id,
+            "operation": operation,
+            "moves": moves or [],
+            "generated_paths": generated_paths or [],
+            "directory_snapshot": recovery_directory_records(directory_snapshot or {}),
+            "created_directory_candidates": created_directory_candidates or [],
+        }
+        validate_recovery_intent(self.intent, target)
+        directory = recovery_directory(target)
+        directory_existed = path_present(directory)
+        target_directory_record = directory_metadata_record(
+            target, "pre-commit recovery target directory"
+        )
+        recovery_directory_record = (
+            directory_metadata_record(directory, "pre-commit recovery directory pre-state")
+            if directory_existed
+            else None
+        )
+        try:
+            ensure_private_directory_under_target(
+                target, Path(PRECOMMIT_RECOVERY_DIRECTORY_NAME), "pre-commit recovery directory"
+            )
+            publish_recovery_intent_no_replace(self.path, canonical_json(self.intent))
+        except BaseException:
+            if not path_present(self.path):
+                if (
+                    directory_existed
+                    and recovery_directory_record is not None
+                    and path_present(directory)
+                ):
+                    restore_directory_metadata_record(
+                        directory,
+                        recovery_directory_record,
+                        "pre-commit recovery directory publish rollback",
+                    )
+                elif not directory_existed and path_present(directory):
+                    cleanup_path_with_retries(directory, raise_on_failure=True)
+                restore_directory_metadata_record(
+                    target,
+                    target_directory_record,
+                    "pre-commit recovery target directory publish rollback",
+                )
+            raise
+
+    def rollback(self) -> None:
+        last: BaseException | None = None
+        for _attempt in range(3):
+            try:
+                recover_one_precommit_intent(self.target, self.path, final_cleanup_committed=False)
+                return
+            except BaseException as exc:
+                last = exc
+        if last is not None:
+            raise last
+
+    def retire(self) -> None:
+        retire_precommit_recovery_intent(self.target, self.path)
 
 
 def rollback_created_target_if_absent(
@@ -672,7 +1295,9 @@ def rollback_created_target_if_absent(
     cleanup_path_with_retries(canonical_target, raise_on_failure=True)
     if path_present(canonical_target):
         fail_concurrent(f"{label} did not remove newly created target")
-    restore_directory_metadata_record(canonical_target.parent, parent_record, f"{label} target parent")
+    restore_directory_metadata_record(
+        canonical_target.parent, parent_record, f"{label} target parent"
+    )
     if path_present(canonical_target):
         fail_concurrent(f"{label} recreated target while restoring parent metadata")
 
@@ -686,6 +1311,8 @@ class FileUndoTransaction:
         label: str,
         owner_only_for: Any,
         max_bytes_for: Any,
+        generated_paths: list[dict[str, Any]] | None = None,
+        created_directory_candidates: list[str] | None = None,
     ) -> None:
         self.target = target
         self.before = before
@@ -695,19 +1322,59 @@ class FileUndoTransaction:
         self.before_directories = directory_object_snapshot(target)
         self.undo_root = target / f".nddev-mimocode.rollback.{os.getpid()}.{time.time_ns()}"
         self.records: dict[Path, Path | None] = {}
+        self.held: set[Path] = set()
+        moves: list[dict[str, Any]] = []
+        for index, relative in enumerate(before):
+            record = before[relative]
+            if record.get("present"):
+                undo_path = self.undo_root / str(index) / relative
+                self.records[relative] = undo_path
+                moves.append(
+                    recovery_move_entry_for_file(
+                        relative,
+                        undo_path.relative_to(target),
+                        f"{label} file {relative}",
+                        record,
+                    )
+                )
+            else:
+                self.records[relative] = None
+                moves.append(recovery_absent_move_entry(relative, f"{label} file {relative}"))
+        generated = list(generated_paths or [])
+        generated.append(
+            recovery_generated_entry(
+                self.undo_root.relative_to(target),
+                f"{label} rollback preserve root",
+            )
+        )
+        self.intent = PrecommitRecoveryIntent(
+            target,
+            label,
+            moves=moves,
+            generated_paths=generated,
+            directory_snapshot=self.before_directories,
+            created_directory_candidates=created_directory_candidates or [],
+        )
 
     def _undo_path(self, relative: Path) -> Path:
-        return self.undo_root / str(len(self.records)) / relative
+        undo_path = self.records.get(relative)
+        if undo_path is None:
+            fail_concurrent(
+                f"{self.label} rollback path is not available for absent file: {relative}"
+            )
+        return undo_path
 
     def _ensure_undo_parent(self, undo_path: Path) -> None:
         undo_relative = undo_path.parent.relative_to(self.target)
         ensure_private_directory_under_target(self.target, undo_relative, "rollback parent")
 
     def hold(self, relative: Path, path: Path) -> None:
-        if relative in self.records:
+        if relative in self.held:
             return
+        if relative not in self.records:
+            fail_concurrent(f"{self.label} cannot hold an unplanned path: {relative}")
         record = self.before[relative]
-        undo_path: Path | None = None
+        undo_path = self.records[relative]
         if record.get("present"):
             if not file_object_matches(
                 path,
@@ -717,14 +1384,15 @@ class FileUndoTransaction:
                 max_bytes=self.max_bytes_for(relative),
             ):
                 fail_concurrent(f"{self.label} pre-state changed before mutation: {relative}")
-            undo_path = self._undo_path(relative)
+            if undo_path is None:
+                fail_concurrent(f"{self.label} rollback path is missing for {relative}")
             self._ensure_undo_parent(undo_path)
-            self.records[relative] = undo_path
             os.replace(path, undo_path)
             fsync_directory_with_retries(path.parent, f"parent directory after holding {relative}")
-            fsync_directory_with_retries(undo_path.parent, f"rollback parent after holding {relative}")
-        else:
-            self.records[relative] = None
+            fsync_directory_with_retries(
+                undo_path.parent, f"rollback parent after holding {relative}"
+            )
+        self.held.add(relative)
 
     def rollback_once(self) -> None:
         for relative in reversed(list(self.records)):
@@ -747,7 +1415,9 @@ class FileUndoTransaction:
                 owner_only=self.owner_only_for(relative),
                 max_bytes=self.max_bytes_for(relative),
             ):
-                fsync_directory_with_retries(path.parent, f"parent directory after rollback restore {relative}")
+                fsync_directory_with_retries(
+                    path.parent, f"parent directory after rollback restore {relative}"
+                )
                 continue
             if path_present(path):
                 require_regular_file(
@@ -760,8 +1430,12 @@ class FileUndoTransaction:
             if undo_path is None or not path_present(undo_path):
                 fail_concurrent(f"{self.label} rollback material is missing: {relative}")
             os.replace(undo_path, path)
-            fsync_directory_with_retries(path.parent, f"parent directory after rollback restore {relative}")
-            fsync_directory_with_retries(undo_path.parent, f"rollback parent after rollback restore {relative}")
+            fsync_directory_with_retries(
+                path.parent, f"parent directory after rollback restore {relative}"
+            )
+            fsync_directory_with_retries(
+                undo_path.parent, f"rollback parent after rollback restore {relative}"
+            )
         verify_file_object_snapshot(
             self.target,
             self.before,
@@ -771,6 +1445,7 @@ class FileUndoTransaction:
         )
         cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
         restore_directory_object_snapshot(self.target, self.before_directories, self.label)
+        self.intent.retire()
 
     def rollback(self) -> None:
         last: BaseException | None = None
@@ -785,28 +1460,43 @@ class FileUndoTransaction:
 
     def commit_cleanup(self) -> None:
         cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
+        self.intent.retire()
+
+    def retire_intent(self) -> None:
+        self.intent.retire()
 
 
 class DirectoryUndoTransaction:
-    def __init__(self, target: Path, *, label: str) -> None:
+    def __init__(
+        self, target: Path, *, label: str, planned_relatives: tuple[Path, ...] = ()
+    ) -> None:
         self.target = target
         self.label = label
+        self.planned_relatives = planned_relatives
         self.undo_root = target / f".nddev-mimocode.rollback.dirs.{os.getpid()}.{time.time_ns()}"
         self.records: dict[Path, Path] = {}
+        self.intents: list[PrecommitRecoveryIntent] = []
 
     def _undo_path(self, relative: Path) -> Path:
+        if relative in self.records:
+            return self.records[relative]
         return self.undo_root / str(len(self.records)) / relative
 
     def _ensure_undo_parent(self, undo_path: Path) -> None:
         undo_relative = undo_path.parent.relative_to(self.target)
-        ensure_private_directory_under_target(self.target, undo_relative, "directory rollback parent")
+        ensure_private_directory_under_target(
+            self.target, undo_relative, "directory rollback parent"
+        )
 
     def hold_empty(self, relative: Path) -> bool:
-        if relative in self.records:
-            return True
         path = self.target / relative
         if not path_present(path):
             return False
+        if relative in self.records:
+            undo_path = self.records[relative]
+        else:
+            undo_path = self._undo_path(relative)
+            self.records[relative] = undo_path
         require_private_directory(path, f"{self.label} directory {relative}")
         try:
             next(path.iterdir())
@@ -816,15 +1506,36 @@ class DirectoryUndoTransaction:
             return False
         else:
             fail(f"{self.label} directory is not empty: {relative}")
-        undo_path = self._undo_path(relative)
         self._ensure_undo_parent(undo_path)
-        self.records[relative] = undo_path
+        intent = PrecommitRecoveryIntent(
+            self.target,
+            self.label,
+            moves=[
+                recovery_move_entry_for_directory(
+                    path,
+                    undo_path.relative_to(self.target),
+                    self.target,
+                    f"{self.label} directory {relative}",
+                )
+            ],
+            directory_snapshot=directory_object_snapshot(self.target),
+            created_directory_candidates=parent_candidates_for((relative,)),
+        )
+        self.intents.append(intent)
         os.replace(path, undo_path)
         fsync_directory_with_retries(path.parent, f"parent directory after holding {relative}")
-        fsync_directory_with_retries(undo_path.parent, f"directory rollback parent after holding {relative}")
+        fsync_directory_with_retries(
+            undo_path.parent, f"directory rollback parent after holding {relative}"
+        )
         return True
 
     def rollback_once(self) -> None:
+        if self.intents:
+            for intent in reversed(self.intents):
+                intent.rollback()
+            self.intents = []
+            cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
+            return
         for relative in reversed(list(self.records)):
             path = self.target / relative
             undo_path = self.records[relative]
@@ -834,12 +1545,18 @@ class DirectoryUndoTransaction:
                     cleanup_path_with_retries(path, raise_on_failure=True)
                 else:
                     fail_concurrent(f"{self.label} rollback found non-directory at {relative}")
-            ensure_private_directory_under_target(self.target, relative.parent, "directory rollback restore parent")
+            ensure_private_directory_under_target(
+                self.target, relative.parent, "directory rollback restore parent"
+            )
             if not path_present(undo_path):
                 fail_concurrent(f"{self.label} directory rollback material is missing: {relative}")
             os.replace(undo_path, path)
-            fsync_directory_with_retries(path.parent, f"parent directory after directory rollback restore {relative}")
-            fsync_directory_with_retries(undo_path.parent, f"directory rollback parent after restore {relative}")
+            fsync_directory_with_retries(
+                path.parent, f"parent directory after directory rollback restore {relative}"
+            )
+            fsync_directory_with_retries(
+                undo_path.parent, f"directory rollback parent after restore {relative}"
+            )
         cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
 
     def rollback(self) -> None:
@@ -855,6 +1572,14 @@ class DirectoryUndoTransaction:
 
     def commit_cleanup(self) -> None:
         cleanup_path_with_retries(self.undo_root, raise_on_failure=True)
+        for intent in self.intents:
+            intent.retire()
+        self.intents = []
+
+    def retire_intent(self) -> None:
+        for intent in self.intents:
+            intent.retire()
+        self.intents = []
 
 
 def identity_of(info: os.stat_result) -> tuple[int, int]:
@@ -1069,14 +1794,18 @@ def discover_builder_source_files() -> tuple[tuple[Path, Path], ...]:
     if not BUILDER_ROOT.is_dir() or BUILDER_ROOT.is_symlink():
         raise RuntimeError("builder source root is missing")
     result: list[tuple[Path, Path]] = []
-    for path in sorted(BUILDER_ROOT.rglob("*"), key=lambda item: str(item.relative_to(BUILDER_ROOT))):
+    for path in sorted(
+        BUILDER_ROOT.rglob("*"), key=lambda item: str(item.relative_to(BUILDER_ROOT))
+    ):
         relative = path.relative_to(BUILDER_ROOT)
         if path.is_dir():
             continue
         if path.is_symlink() or not path.is_file():
             raise RuntimeError(f"unsafe builder source path: {relative}")
         if relative.parts and relative.parts[0] == "workflows":
-            raise RuntimeError("builder workflows are not part of the supported MiMo Code projection")
+            raise RuntimeError(
+                "builder workflows are not part of the supported MiMo Code projection"
+            )
         result.append((relative, MIMOCODE_CONFIG_DIR_RELATIVE / relative))
     return tuple(result)
 
@@ -1164,7 +1893,9 @@ def validate_profile_metadata(metadata: dict[str, Any], profile_id: str) -> None
         fail(f"profile {profile_id} launch_env must be a string object")
     blocked_runtime_env = sorted(set(launch_env) & set(MIMOCODE_FIXED_RUNTIME_ENV))
     if blocked_runtime_env:
-        fail(f"profile {profile_id} launch_env must not override manager-owned runtime env: {blocked_runtime_env}")
+        fail(
+            f"profile {profile_id} launch_env must not override manager-owned runtime env: {blocked_runtime_env}"
+        )
     if profile_id == "full-auto":
         if metadata["default"] is not True or metadata["default_agent"] != "build":
             fail("full-auto must be the default build profile")
@@ -1224,7 +1955,9 @@ def validate_setup_metadata(metadata: dict[str, Any], setup_id: str) -> None:
 def render_builder_files() -> dict[Path, bytes]:
     files: dict[Path, bytes] = {}
     for source_relative, target_relative in BUILDER_SOURCE_FILES:
-        content, _ = read_regular_file(BUILDER_ROOT / source_relative, f"builder source {source_relative}")
+        content, _ = read_regular_file(
+            BUILDER_ROOT / source_relative, f"builder source {source_relative}"
+        )
         files[target_relative] = content
     return files
 
@@ -1276,7 +2009,9 @@ def render_setup(
         fail(f"unknown profile: {profile_id}")
     metadata = load_json_object(setup_root / "setup.json", f"setup {setup_id} metadata")
     validate_setup_metadata(metadata, setup_id)
-    profile_metadata = load_json_object(profile_root / "profile.json", f"profile {profile_id} metadata")
+    profile_metadata = load_json_object(
+        profile_root / "profile.json", f"profile {profile_id} metadata"
+    )
     validate_profile_metadata(profile_metadata, profile_id)
     config = load_json_object(setup_root / "mimocode.json", f"setup {setup_id}/mimocode.json")
     validate_setup_config(config, f"setup {setup_id}/mimocode.json")
@@ -1395,7 +2130,10 @@ def bootstrap_global_lock_path() -> Path:
 
 def bootstrap_lock_path(target: Path) -> Path:
     canonical_target = canonical_target_for_bootstrap_lock(target)
-    return bootstrap_lock_pool(canonical_target) / f"{bootstrap_lock_key(canonical_target)}{BOOTSTRAP_LOCK_SUFFIX}"
+    return (
+        bootstrap_lock_pool(canonical_target)
+        / f"{bootstrap_lock_key(canonical_target)}{BOOTSTRAP_LOCK_SUFFIX}"
+    )
 
 
 def require_safe_target_parent_for_creation(parent: Path) -> None:
@@ -1452,17 +2190,26 @@ def ensure_bootstrap_lock_pool_state(canonical_target: Path) -> BootstrapPoolSta
             info = pool.lstat()
         else:
             pool.chmod(OWNER_DIRECTORY_MODE)
-            fsync_directory_with_retries(pool.parent, "bootstrap lifecycle lock pool parent after create")
+            fsync_directory_with_retries(
+                pool.parent, "bootstrap lifecycle lock pool parent after create"
+            )
             info = pool.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail("bootstrap lifecycle lock pool must be a real directory")
     if not is_owner_private_directory(info):
         fail("bootstrap lifecycle lock pool must be owned by the current user with mode 0700")
-    return pool, existed_before, parent_record, directory_metadata_record(pool, "bootstrap lifecycle lock pool")
+    return (
+        pool,
+        existed_before,
+        parent_record,
+        directory_metadata_record(pool, "bootstrap lifecycle lock pool"),
+    )
 
 
 def ensure_bootstrap_lock_pool(canonical_target: Path) -> Path:
-    pool, _existed_before, _parent_record, _pool_record = ensure_bootstrap_lock_pool_state(canonical_target)
+    pool, _existed_before, _parent_record, _pool_record = ensure_bootstrap_lock_pool_state(
+        canonical_target
+    )
     return pool
 
 
@@ -1480,7 +2227,9 @@ def restore_bootstrap_lock_pool_state(
         cleanup_path_with_retries(pool, raise_on_failure=True)
         if path_present(pool):
             fail_concurrent(f"{label} left newly-created bootstrap lock pool")
-    restore_directory_metadata_record(pool.parent, parent_record, f"{label} bootstrap lock pool parent")
+    restore_directory_metadata_record(
+        pool.parent, parent_record, f"{label} bootstrap lock pool parent"
+    )
 
 
 def bootstrap_global_lock_binding() -> dict[str, Any]:
@@ -1508,7 +2257,9 @@ def is_bootstrap_publication_alias(path: Path, final_path: Path) -> bool:
     return len(parts) == 2 and all(part.isdecimal() and part for part in parts)
 
 
-def require_bootstrap_anchor_path(path: Path, label: str, *, allow_publication_alias: bool) -> os.stat_result:
+def require_bootstrap_anchor_path(
+    path: Path, label: str, *, allow_publication_alias: bool
+) -> os.stat_result:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1585,7 +2336,9 @@ def open_bootstrap_anchor_lock_file(path: Path, label: str) -> int:
     return descriptor
 
 
-def acquire_bootstrap_anchor_lock(descriptor: int, path: Path, label: str, *, shared: bool = False) -> None:
+def acquire_bootstrap_anchor_lock(
+    descriptor: int, path: Path, label: str, *, shared: bool = False
+) -> None:
     if shared:
         acquire_file_lock(descriptor, path, shared=True)
         current = require_bootstrap_anchor_path(path, label, allow_publication_alias=False)
@@ -1691,7 +2444,9 @@ def product_lifecycle_lock(path: Path, *, shared: bool = False) -> Iterator[None
     descriptor = open_bootstrap_anchor_lock_file(path, "bootstrap product lock file")
     acquired = False
     try:
-        acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap product lock file", shared=shared)
+        acquire_bootstrap_anchor_lock(
+            descriptor, path, "bootstrap product lock file", shared=shared
+        )
         acquired = True
         validate_bootstrap_global_lock_binding(descriptor, path)
         yield
@@ -1801,7 +2556,9 @@ def bootstrap_lock_binding(canonical_target: Path, target_key: str) -> dict[str,
     }
 
 
-def validate_bootstrap_lock_binding(descriptor: int, path: Path, canonical_target: Path, target_key: str) -> None:
+def validate_bootstrap_lock_binding(
+    descriptor: int, path: Path, canonical_target: Path, target_key: str
+) -> None:
     verify_locked_file_identity(descriptor, path, "bootstrap lifecycle lock file")
     desired = bootstrap_lock_binding(canonical_target, target_key)
     content = read_lock_file_descriptor(descriptor, label="bootstrap lifecycle lock file")
@@ -1842,7 +2599,11 @@ def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
         try:
             ensure_bootstrap_global_lock_anchor(pool)
         except BaseException:
-            if not path_present(global_path) and parent_record is not None and pool_record is not None:
+            if (
+                not path_present(global_path)
+                and parent_record is not None
+                and pool_record is not None
+            ):
                 restore_bootstrap_lock_pool_state(
                     pool,
                     existed_before=pool_existed,
@@ -1851,7 +2612,9 @@ def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
                     label="bootstrap product anchor rollback",
                 )
             raise
-        pool_record = directory_metadata_record(pool, "bootstrap lifecycle lock pool after product anchor")
+        pool_record = directory_metadata_record(
+            pool, "bootstrap lifecycle lock pool after product anchor"
+        )
         with product_lifecycle_lock(global_path):
             try:
                 canonical_target = canonical_target_for_bootstrap_lock(target)
@@ -1859,17 +2622,23 @@ def bootstrap_lifecycle_lock(target: Path) -> Iterator[Path]:
                 path = pool / f"{target_key}{BOOTSTRAP_LOCK_SUFFIX}"
                 marker_existed = path_present(path)
                 if marker_existed:
-                    descriptor = open_bootstrap_anchor_lock_file(path, "bootstrap lifecycle lock file")
+                    descriptor = open_bootstrap_anchor_lock_file(
+                        path, "bootstrap lifecycle lock file"
+                    )
                     acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap lifecycle lock file")
                     acquired = True
                     validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
                 else:
-                    descriptor = publish_new_bootstrap_lock_binding(path, canonical_target, target_key)
+                    descriptor = publish_new_bootstrap_lock_binding(
+                        path, canonical_target, target_key
+                    )
                     acquired = True
                     validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
             except BaseException:
                 if pool is not None and parent_record is not None and pool_record is not None:
-                    restore_directory_metadata_record(pool, pool_record, "bootstrap lifecycle rollback bootstrap lock pool")
+                    restore_directory_metadata_record(
+                        pool, pool_record, "bootstrap lifecycle rollback bootstrap lock pool"
+                    )
                 raise
         yield canonical_target
     except BaseException:
@@ -1906,7 +2675,9 @@ def bootstrap_inspection_coordination(target: Path) -> Iterator[Path]:
             except FileNotFoundError:
                 yield canonical_target
                 return
-            acquire_bootstrap_anchor_lock(descriptor, path, "bootstrap lifecycle lock file", shared=True)
+            acquire_bootstrap_anchor_lock(
+                descriptor, path, "bootstrap lifecycle lock file", shared=True
+            )
             acquired = True
             validate_bootstrap_lock_binding(descriptor, path, canonical_target, target_key)
         yield canonical_target
@@ -1963,7 +2734,9 @@ def target_lock(target: Path) -> Iterator[None]:
     lock_directory = lock_directory_path(target)
     lock_directory_existed = path_present(lock_directory)
     lock_directory_record = (
-        directory_metadata_record(lock_directory, "target lock directory pre-state") if lock_directory_existed else None
+        directory_metadata_record(lock_directory, "target lock directory pre-state")
+        if lock_directory_existed
+        else None
     )
     lock_file_record = file_object_record(
         lock_path(target),
@@ -1987,7 +2760,12 @@ def target_lock(target: Path) -> Iterator[None]:
                 lock_directory.chmod(OWNER_DIRECTORY_MODE)
         if not lock_file_record.get("present"):
             if path_present(path):
-                require_regular_file(path, "target lock rollback created file", owner_only=True, max_bytes=METADATA_MAX_BYTES)
+                require_regular_file(
+                    path,
+                    "target lock rollback created file",
+                    owner_only=True,
+                    max_bytes=METADATA_MAX_BYTES,
+                )
                 unlink_file_durable(path)
         elif not file_object_matches(
             path,
@@ -2001,7 +2779,9 @@ def target_lock(target: Path) -> Iterator[None]:
             if path_present(lock_directory):
                 cleanup_path_with_retries(lock_directory, raise_on_failure=True)
         elif lock_directory_record is not None:
-            restore_directory_metadata_record(lock_directory, lock_directory_record, "target lock rollback directory")
+            restore_directory_metadata_record(
+                lock_directory, lock_directory_record, "target lock rollback directory"
+            )
         restore_directory_metadata_record(target, target_record, "target lock rollback parent")
 
     try:
@@ -2029,23 +2809,32 @@ def target_lock(target: Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def locked_new_or_existing_target(target: Path) -> Iterator[Path]:
-    with locked_new_or_existing_target_state(target) as (canonical_target, _existed_before, _parent_record):
+    with locked_new_or_existing_target_state(target) as (
+        canonical_target,
+        _existed_before,
+        _parent_record,
+    ):
         yield canonical_target
 
 
 @contextlib.contextmanager
-def locked_new_or_existing_target_state(target: Path) -> Iterator[tuple[Path, bool, DirectoryMetadataRecord]]:
+def locked_new_or_existing_target_state(
+    target: Path,
+) -> Iterator[tuple[Path, bool, DirectoryMetadataRecord]]:
     with bootstrap_lifecycle_lock(target) as locked_target:
         existed_before = path_present(locked_target)
         parent_record = directory_metadata_record(locked_target.parent, "target parent")
         try:
             canonical_target = ensure_target_directory(locked_target)
         except BaseException:
-            rollback_created_target_if_absent(locked_target, existed_before, parent_record, "target creation rollback")
+            rollback_created_target_if_absent(
+                locked_target, existed_before, parent_record, "target creation rollback"
+            )
             raise
         if canonical_target != locked_target:
             fail_concurrent("target canonical path changed during lifecycle lock acquisition")
         with target_lock(canonical_target):
+            recover_precommit_transactions(canonical_target)
             yield canonical_target, existed_before, parent_record
 
 
@@ -2054,6 +2843,7 @@ def locked_existing_target(target: Path) -> Iterator[Path]:
     with bootstrap_lifecycle_lock(target) as canonical_target:
         require_private_directory(canonical_target, "target")
         with target_lock(canonical_target):
+            recover_precommit_transactions(canonical_target)
             yield canonical_target
 
 
@@ -2062,6 +2852,7 @@ def locked_inspection_target(target: Path) -> Iterator[Path]:
     with bootstrap_inspection_coordination(target) as canonical_target:
         if path_present(canonical_target):
             require_private_directory(canonical_target, "target")
+            ensure_no_precommit_recovery_state(canonical_target)
             yield canonical_target
         else:
             yield canonical_target
@@ -2131,7 +2922,9 @@ def ensure_private_directory_under_target(target: Path, relative: Path, label: s
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 fail(f"{label} {current.relative_to(target)} must be a real directory")
             if not is_owner_private_directory(info):
-                fail(f"{label} {current.relative_to(target)} must be owned by the current user with mode 0700")
+                fail(
+                    f"{label} {current.relative_to(target)} must be owned by the current user with mode 0700"
+                )
         else:
             current.mkdir(mode=OWNER_DIRECTORY_MODE)
             current.chmod(OWNER_DIRECTORY_MODE)
@@ -2199,8 +2992,14 @@ def validate_managed_files(target: Path, stamp: dict[str, Any]) -> list[str]:
     for relative in ordered:
         if relative.is_absolute() or ".." in relative.parts:
             fail("setup stamp contains an unsafe managed path")
-        content, _ = read_regular_file(target / relative, f"managed file {relative}", owner_only=True)
-        digest = legacy_managed_digest(relative, content) if stamp.get("legacy") else managed_digest(relative, content)
+        content, _ = read_regular_file(
+            target / relative, f"managed file {relative}", owner_only=True
+        )
+        digest = (
+            legacy_managed_digest(relative, content)
+            if stamp.get("legacy")
+            else managed_digest(relative, content)
+        )
         if digest != expected[str(relative)]:
             drift.append(str(relative))
     if drift:
@@ -2210,7 +3009,12 @@ def validate_managed_files(target: Path, stamp: dict[str, Any]) -> list[str]:
 
 def inspect_target(target: Path, *, include_cleanup: bool = True) -> dict[str, Any]:
     if not path_present(target):
-        return {"state": "missing", "target": str(target), "cleanup_pending": False, "cleanup_pending_entries": []}
+        return {
+            "state": "missing",
+            "target": str(target),
+            "cleanup_pending": False,
+            "cleanup_pending_entries": [],
+        }
     require_private_directory(target, "target")
     pending = (
         cleanup_pending_state(target)
@@ -2245,17 +3049,23 @@ def inspect_target(target: Path, *, include_cleanup: bool = True) -> dict[str, A
 def read_existing_config_if_managed(target: Path, state: dict[str, Any]) -> dict[str, Any] | None:
     if state.get("state") != "managed":
         return None
-    return load_json_object(target / MIMOCODE_CONFIG_RELATIVE, f"existing {MIMOCODE_CONFIG_RELATIVE}", owner_only=True)
+    return load_json_object(
+        target / MIMOCODE_CONFIG_RELATIVE, f"existing {MIMOCODE_CONFIG_RELATIVE}", owner_only=True
+    )
 
 
 def preserved_legacy_config_for_migration(target: Path, state: dict[str, Any]) -> dict[str, Any]:
     if state.get("state") != "legacy-managed":
         fail("legacy config preservation requires a legacy managed target")
-    config = load_json_object(target / Path("config") / "mimocode.json", "legacy config/mimocode.json", owner_only=True)
+    config = load_json_object(
+        target / Path("config") / "mimocode.json", "legacy config/mimocode.json", owner_only=True
+    )
     return {key: value for key, value in config.items() if key not in LEGACY_MANAGED_CONFIG_KEYS}
 
 
-def current_managed_snapshot(target: Path, paths: tuple[Path, ...] = ALL_MANAGED_PATHS) -> dict[Path, bytes | None]:
+def current_managed_snapshot(
+    target: Path, paths: tuple[Path, ...] = ALL_MANAGED_PATHS
+) -> dict[Path, bytes | None]:
     snapshot: dict[Path, bytes | None] = {}
     for relative in paths:
         path = target / relative
@@ -2275,7 +3085,9 @@ def managed_max_bytes(_relative: Path) -> int:
     return MANAGED_PAYLOAD_MAX_BYTES
 
 
-def current_managed_object_snapshot(target: Path, paths: tuple[Path, ...] = ALL_MANAGED_PATHS) -> FileObjectSnapshot:
+def current_managed_object_snapshot(
+    target: Path, paths: tuple[Path, ...] = ALL_MANAGED_PATHS
+) -> FileObjectSnapshot:
     return {
         relative: file_object_record(
             target / relative,
@@ -2302,7 +3114,12 @@ def prune_empty_managed_dirs(target: Path, paths: tuple[Path, ...] = ALL_MANAGED
     )
     protected = {target, lock_directory_path(target), backup_pool(target)}
     for directory in candidates:
-        while directory not in protected and directory != target and directory.is_dir() and not directory.is_symlink():
+        while (
+            directory not in protected
+            and directory != target
+            and directory.is_dir()
+            and not directory.is_symlink()
+        ):
             try:
                 rmdir_if_empty_durable(directory)
             except OSError:
@@ -2311,9 +3128,17 @@ def prune_empty_managed_dirs(target: Path, paths: tuple[Path, ...] = ALL_MANAGED
 
 
 def managed_write_order(state: dict[Path, bytes | None]) -> list[Path]:
-    writes = sorted(relative for relative, content in state.items() if content is not None and relative != Path(STAMP_NAME))
+    writes = sorted(
+        relative
+        for relative, content in state.items()
+        if content is not None and relative != Path(STAMP_NAME)
+    )
     stamp = [Path(STAMP_NAME)] if state.get(Path(STAMP_NAME)) is not None else []
-    removals = sorted((relative for relative, content in state.items() if content is None), key=lambda item: (len(item.parts), str(item)), reverse=True)
+    removals = sorted(
+        (relative for relative, content in state.items() if content is None),
+        key=lambda item: (len(item.parts), str(item)),
+        reverse=True,
+    )
     return [*writes, *stamp, *removals]
 
 
@@ -2341,14 +3166,29 @@ def apply_managed_state(
     paths = tuple(desired)
     before_objects = current_managed_object_snapshot(target, paths)
     before = managed_payload_snapshot(before_objects)
-    if expected_before is not None and before != {relative: expected_before.get(relative) for relative in paths}:
+    if expected_before is not None and before != {
+        relative: expected_before.get(relative) for relative in paths
+    }:
         fail_concurrent(f"{label} pre-state changed before mutation")
+    staged_paths = {
+        relative: staged_file_path(target / relative)
+        for relative, content in desired.items()
+        if content is not None
+    }
+    generated_paths = [
+        recovery_generated_entry(
+            temporary.relative_to(target), f"{label} staged file {relative}", kind="file"
+        )
+        for relative, temporary in sorted(staged_paths.items(), key=lambda item: str(item[0]))
+    ]
     undo = FileUndoTransaction(
         target,
         before_objects,
         label=label,
         owner_only_for=managed_owner_only,
         max_bytes_for=managed_max_bytes,
+        generated_paths=generated_paths,
+        created_directory_candidates=parent_candidates_for(paths),
     )
     staged: dict[Path, Path] = {}
 
@@ -2361,7 +3201,9 @@ def apply_managed_state(
         for relative, content in desired.items():
             if content is not None:
                 ensure_private_parent(target, relative)
-                staged[relative] = create_staged_file(target / relative, content, OWNER_FILE_MODE)
+                staged[relative] = create_staged_file_at(
+                    staged_paths[relative], content, OWNER_FILE_MODE
+                )
         for relative in managed_write_order(desired):
             path = target / relative
             content = desired[relative]
@@ -2389,7 +3231,9 @@ def apply_managed_state(
     return undo
 
 
-def restore_managed_snapshot_with_retries(target: Path, snapshot: FileObjectSnapshot | dict[Path, bytes | None], *, label: str) -> None:
+def restore_managed_snapshot_with_retries(
+    target: Path, snapshot: FileObjectSnapshot | dict[Path, bytes | None], *, label: str
+) -> None:
     last: BaseException | None = None
     if all(isinstance(record, dict) for record in snapshot.values()):
         object_snapshot = snapshot  # type: ignore[assignment]
@@ -2494,31 +3338,29 @@ def backup_file_records(files: dict[Path, bytes]) -> list[dict[str, Any]]:
     return [backup_file_record(relative, files[relative]) for relative in sorted(files)]
 
 
-def directory_tree_snapshot(path: Path) -> dict[str, tuple[str, int, str | None]]:
+def directory_tree_snapshot(path: Path) -> dict[str, dict[str, Any]]:
     if not path_present(path):
         return {}
-    info = require_directory(path, str(path))
-    result: dict[str, tuple[str, int, str | None]] = {".": ("dir", stat.S_IMODE(info.st_mode), None)}
+    require_directory(path, str(path))
+    result: dict[str, dict[str, Any]] = {
+        ".": cleanup_record_for_path(path, Path("."), f"tree root {path}")
+    }
     for item in sorted(path.rglob("*"), key=lambda entry: str(entry.relative_to(path))):
         relative = str(item.relative_to(path))
-        item_info = item.lstat()
-        mode = stat.S_IMODE(item_info.st_mode)
-        if stat.S_ISDIR(item_info.st_mode):
-            result[relative] = ("dir", mode, None)
-        elif stat.S_ISREG(item_info.st_mode):
-            content, _ = read_regular_file(item, f"tree file {item}", max_bytes=MANAGED_PAYLOAD_MAX_BYTES)
-            result[relative] = ("file", mode, sha256_bytes(content))
-        else:
-            fail(f"tree contains unsupported path type: {item}")
+        result[relative] = cleanup_record_for_path(item, Path(relative), f"tree object {item}")
     return result
 
 
-def backup_pool_snapshot(target: Path) -> dict[str, tuple[str, int, str | None]]:
+def backup_pool_snapshot(target: Path) -> dict[str, dict[str, Any]]:
     return directory_tree_snapshot(backup_pool(target))
 
 
 def bounded_relative_text(relative: Path, label: str, *, allow_dot: bool = False) -> str:
-    if relative.is_absolute() or ".." in relative.parts or (relative == Path(".") and not allow_dot):
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or (relative == Path(".") and not allow_dot)
+    ):
         fail(f"unsafe {label}: {relative}")
     text = "." if relative == Path(".") else relative.as_posix()
     if not text or len(text.encode("utf-8")) > POSTCOMMIT_CLEANUP_MAX_RELATIVE_BYTES:
@@ -2537,7 +3379,9 @@ def cleanup_journal_allowed_entry_path(relative: Path) -> bool:
         return False
     if relative.name == POSTCOMMIT_CLEANUP_JOURNAL_NAME:
         return False
-    return is_transaction_residue_path(relative) and text.startswith(POSTCOMMIT_CLEANUP_DIRECTORY_NAME + "/")
+    return is_transaction_residue_path(relative) and text.startswith(
+        POSTCOMMIT_CLEANUP_DIRECTORY_NAME + "/"
+    )
 
 
 def cleanup_publication_alias_path(final_path: Path) -> Path:
@@ -2598,7 +3442,11 @@ def cleanup_tree_records(path: Path) -> list[dict[str, Any]]:
     if len(children) + 1 > POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS:
         fail("post-commit cleanup tombstone exceeds its tree record bound")
     for child in children:
-        records.append(cleanup_record_for_path(child, child.relative_to(path), "post-commit cleanup tombstone child"))
+        records.append(
+            cleanup_record_for_path(
+                child, child.relative_to(path), "post-commit cleanup tombstone child"
+            )
+        )
     return records
 
 
@@ -2618,7 +3466,9 @@ def cleanup_current_tree_records(path: Path) -> dict[Path, dict[str, Any]]:
     }
     for child in sorted(path.rglob("*"), key=lambda entry: str(entry.relative_to(path))):
         relative = child.relative_to(path)
-        records[relative] = cleanup_record_for_path(child, relative, "post-commit cleanup tombstone child")
+        records[relative] = cleanup_record_for_path(
+            child, relative, "post-commit cleanup tombstone child"
+        )
     if len(records) > POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS:
         fail("post-commit cleanup tombstone exceeds its tree record bound")
     return records
@@ -2636,7 +3486,9 @@ def cleanup_file_record_is_exact(current: dict[str, Any], expected: dict[str, An
     return current == expected
 
 
-def validate_cleanup_entry_state(target: Path, entry: dict[str, Any], *, require_full: bool = False) -> str:
+def validate_cleanup_entry_state(
+    target: Path, entry: dict[str, Any], *, require_full: bool = False
+) -> str:
     relative = Path(entry["relative_path"])
     path = target / relative
     current = cleanup_current_tree_records(path)
@@ -2647,9 +3499,14 @@ def validate_cleanup_entry_state(target: Path, entry: dict[str, Any], *, require
     recorded_paths = set(recorded)
     unknown = current_paths - recorded_paths
     if unknown:
-        fail(f"post-commit cleanup tombstone contains unknown children: {sorted(str(path) for path in unknown)}")
+        fail(
+            f"post-commit cleanup tombstone contains unknown children: {sorted(str(path) for path in unknown)}"
+        )
     if require_full:
-        if current_paths != recorded_paths or [current[Path(record["relative_path"])] for record in entry["tree"]] != entry["tree"]:
+        if (
+            current_paths != recorded_paths
+            or [current[Path(record["relative_path"])] for record in entry["tree"]] != entry["tree"]
+        ):
             fail(f"post-commit cleanup tombstone changed before drain: {entry['label']}")
         return "present"
     full_tree_present = current_paths == recorded_paths
@@ -2665,26 +3522,34 @@ def validate_cleanup_entry_state(target: Path, entry: dict[str, Any], *, require
         if not cleanup_directory_record_is_stable(current_record, expected):
             fail(f"post-commit cleanup tombstone directory identity changed: {entry['label']}")
         actual_children = direct_child_names(current_paths, record_path)
-        expected_remaining_children = direct_child_names(current_paths & recorded_paths, record_path)
+        expected_remaining_children = direct_child_names(
+            current_paths & recorded_paths, record_path
+        )
         if actual_children != expected_remaining_children:
             fail(f"post-commit cleanup tombstone child set changed: {entry['label']}")
         if full_tree_present:
             for key in ("nlink", "size", "mtime_ns"):
                 if current_record[key] != expected[key]:
-                    fail(f"post-commit cleanup tombstone directory metadata changed before drain: {entry['label']}")
+                    fail(
+                        f"post-commit cleanup tombstone directory metadata changed before drain: {entry['label']}"
+                    )
         else:
             exact = False
     return "present" if exact else "partial"
 
 
 def validate_cleanup_file_before_delete(path: Path, record: dict[str, Any]) -> None:
-    current = cleanup_record_for_path(path, Path(record["relative_path"]), "post-commit cleanup file before delete")
+    current = cleanup_record_for_path(
+        path, Path(record["relative_path"]), "post-commit cleanup file before delete"
+    )
     if not cleanup_file_record_is_exact(current, record):
         fail("post-commit cleanup file changed before delete")
 
 
 def validate_cleanup_directory_before_delete(path: Path, record: dict[str, Any]) -> None:
-    current = cleanup_record_for_path(path, Path(record["relative_path"]), "post-commit cleanup directory before delete")
+    current = cleanup_record_for_path(
+        path, Path(record["relative_path"]), "post-commit cleanup directory before delete"
+    )
     if not cleanup_directory_record_is_stable(current, record):
         fail("post-commit cleanup directory changed before delete")
     children = sorted(child.name for child in path.iterdir())
@@ -2732,7 +3597,10 @@ def validate_cleanup_tree_record(record: Any, label: str) -> dict[str, Any]:
     if record["uid"] is not None and (not isinstance(record["uid"], int) or record["uid"] < 0):
         fail(f"{label} uid must be a non-negative integer or null")
     if record["kind"] == "file":
-        if not isinstance(record["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is None:
+        if (
+            not isinstance(record["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is None
+        ):
             fail(f"{label} file sha256 is invalid")
     elif record["sha256"] is not None:
         fail(f"{label} directory sha256 must be null")
@@ -2762,7 +3630,9 @@ def validate_cleanup_entry(entry: Any, seen: set[Path], index: int) -> dict[str,
     if not isinstance(tree, list) or not tree or len(tree) > POSTCOMMIT_CLEANUP_MAX_TREE_RECORDS:
         fail("post-commit cleanup journal entry tree has an invalid bound")
     validated_tree = [
-        validate_cleanup_tree_record(record, f"post-commit cleanup journal entry {index} tree record")
+        validate_cleanup_tree_record(
+            record, f"post-commit cleanup journal entry {index} tree record"
+        )
         for record in tree
     ]
     if validated_tree[0]["relative_path"] != ".":
@@ -2771,7 +3641,9 @@ def validate_cleanup_entry(entry: Any, seen: set[Path], index: int) -> dict[str,
     for key in ("kind", "uid", "mode", "nlink", "dev", "ino", "size", "mtime_ns"):
         if entry[key] != root[key]:
             fail(f"post-commit cleanup journal entry root {key} mismatch")
-    if not isinstance(entry["tree_sha256"], str) or entry["tree_sha256"] != cleanup_tree_digest(validated_tree):
+    if not isinstance(entry["tree_sha256"], str) or entry["tree_sha256"] != cleanup_tree_digest(
+        validated_tree
+    ):
         fail("post-commit cleanup journal entry tree digest mismatch")
     return entry
 
@@ -2785,6 +3657,8 @@ def cleanup_namespace_residue(target: Path, journal_paths: set[Path]) -> list[st
         relative = path.relative_to(target)
         if relative.parts and relative.parts[0] == POSTCOMMIT_CLEANUP_DIRECTORY_NAME:
             continue
+        if relative.parts and relative.parts[0] == PRECOMMIT_RECOVERY_DIRECTORY_NAME:
+            continue
         if not is_transaction_residue_path(relative):
             continue
         if relative in journal_paths or any(parent in relative.parents for parent in journal_paths):
@@ -2793,7 +3667,9 @@ def cleanup_namespace_residue(target: Path, journal_paths: set[Path]) -> list[st
     return residue
 
 
-def cleanup_directory_publication_aliases(directory: Path, journal_path: Path) -> tuple[list[Path], list[Path]]:
+def cleanup_directory_publication_aliases(
+    directory: Path, journal_path: Path
+) -> tuple[list[Path], list[Path]]:
     aliases: list[Path] = []
     unknown: list[Path] = []
     for child in sorted(directory.iterdir(), key=lambda item: item.name):
@@ -2835,17 +3711,23 @@ def recover_cleanup_journal_publication_alias(journal_path: Path) -> None:
         if identity_of(child_info) == identity_of(info):
             fail("post-commit cleanup journal has an unbounded publication alias")
     if len(aliases) != 1:
-        fail("post-commit cleanup journal must have exactly one bounded publication alias before recovery")
+        fail(
+            "post-commit cleanup journal must have exactly one bounded publication alias before recovery"
+        )
     alias = aliases[0]
     alias_info = require_cleanup_journal_file(alias, allow_publication_alias=True)
     if identity_of(alias_info) != identity_of(info):
         fail("post-commit cleanup journal publication alias does not match the final journal")
     unlink_file_durable(alias)
-    fsync_directory_with_retries(journal_path.parent, "post-commit cleanup directory after alias recovery")
+    fsync_directory_with_retries(
+        journal_path.parent, "post-commit cleanup directory after alias recovery"
+    )
     require_cleanup_journal_file(journal_path, allow_publication_alias=False)
 
 
-def prepare_cleanup_journal_for_open(target: Path, *, recover_publication_alias: bool) -> Path | None:
+def prepare_cleanup_journal_for_open(
+    target: Path, *, recover_publication_alias: bool
+) -> Path | None:
     directory = postcommit_cleanup_directory(target)
     journal_path = postcommit_cleanup_journal_path(target)
     if not path_present(directory):
@@ -2864,7 +3746,30 @@ def prepare_cleanup_journal_for_open(target: Path, *, recover_publication_alias:
     return journal_path
 
 
-def validate_cleanup_directory_contents(target: Path, journal_paths: set[Path], *, allow_publication_alias: bool) -> None:
+def prepare_cleanup_journal_for_read(target: Path, *, allow_publication_alias: bool) -> Path | None:
+    directory = postcommit_cleanup_directory(target)
+    journal_path = postcommit_cleanup_journal_path(target)
+    if not path_present(directory):
+        residue = cleanup_namespace_residue(target, set())
+        if residue:
+            fail(f"cleanup namespace contains unjournaled residue: {', '.join(residue)}")
+        return None
+    require_private_directory(directory, "post-commit cleanup directory")
+    aliases, _unknown = cleanup_directory_publication_aliases(directory, journal_path)
+    if not path_present(journal_path):
+        fail("post-commit cleanup directory contains incomplete journal publication state")
+    info = require_cleanup_journal_file(
+        journal_path, allow_publication_alias=allow_publication_alias
+    )
+    if aliases or info.st_nlink != 1:
+        if not allow_publication_alias:
+            fail("post-commit cleanup journal publication is incomplete")
+    return journal_path
+
+
+def validate_cleanup_directory_contents(
+    target: Path, journal_paths: set[Path], *, allow_publication_alias: bool
+) -> None:
     directory = postcommit_cleanup_directory(target)
     journal_path = postcommit_cleanup_journal_path(target)
     for child in sorted(directory.iterdir(), key=lambda item: item.name):
@@ -2879,8 +3784,12 @@ def validate_cleanup_directory_contents(target: Path, journal_paths: set[Path], 
             fail("post-commit cleanup directory contains unjournaled tombstone state")
 
 
-def read_cleanup_journal_object(journal_path: Path, *, allow_publication_alias: bool) -> dict[str, Any]:
-    before = require_cleanup_journal_file(journal_path, allow_publication_alias=allow_publication_alias)
+def read_cleanup_journal_object(
+    journal_path: Path, *, allow_publication_alias: bool
+) -> dict[str, Any]:
+    before = require_cleanup_journal_file(
+        journal_path, allow_publication_alias=allow_publication_alias
+    )
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
@@ -2908,7 +3817,9 @@ def read_cleanup_journal_object(journal_path: Path, *, allow_publication_alias: 
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    final = require_cleanup_journal_file(journal_path, allow_publication_alias=allow_publication_alias)
+    final = require_cleanup_journal_file(
+        journal_path, allow_publication_alias=allow_publication_alias
+    )
     if identity_of(after) != identity_of(before) or identity_of(final) != identity_of(before):
         fail_concurrent("post-commit cleanup journal changed while it was being read")
     return parse_json_object(content, "post-commit cleanup journal")
@@ -2918,11 +3829,15 @@ def load_postcommit_cleanup_journal(
     target: Path,
     *,
     recover_publication_alias: bool = False,
+    allow_publication_alias: bool | None = None,
 ) -> dict[str, Any] | None:
-    journal_path = prepare_cleanup_journal_for_open(target, recover_publication_alias=recover_publication_alias)
+    allow_alias = (
+        recover_publication_alias if allow_publication_alias is None else allow_publication_alias
+    )
+    journal_path = prepare_cleanup_journal_for_read(target, allow_publication_alias=allow_alias)
     if journal_path is None:
         return None
-    journal = read_cleanup_journal_object(journal_path, allow_publication_alias=recover_publication_alias)
+    journal = read_cleanup_journal_object(journal_path, allow_publication_alias=allow_alias)
     require_exact_keys(journal, POSTCOMMIT_CLEANUP_JOURNAL_KEYS, "post-commit cleanup journal")
     if (
         journal["schema_version"] != 1
@@ -2940,10 +3855,10 @@ def load_postcommit_cleanup_journal(
     seen: set[Path] = set()
     for index, entry in enumerate(entries):
         validate_cleanup_entry(entry, seen, index)
-    validate_cleanup_directory_contents(target, seen, allow_publication_alias=recover_publication_alias)
+    validate_cleanup_directory_contents(target, seen, allow_publication_alias=allow_alias)
     if recover_publication_alias:
         recover_cleanup_journal_publication_alias(journal_path)
-    validate_cleanup_directory_contents(target, seen, allow_publication_alias=False)
+        validate_cleanup_directory_contents(target, seen, allow_publication_alias=False)
     residue = cleanup_namespace_residue(target, seen)
     if residue:
         fail(f"cleanup namespace contains unjournaled residue: {', '.join(residue)}")
@@ -2968,11 +3883,246 @@ def cleanup_pending_state(target: Path) -> dict[str, Any]:
     return {"cleanup_pending": True, "cleanup_pending_entries": metadata}
 
 
+def validate_committed_cleanup_pending(target: Path) -> bool:
+    try:
+        journal = load_postcommit_cleanup_journal(
+            target,
+            recover_publication_alias=False,
+            allow_publication_alias=True,
+        )
+        if journal is None:
+            fail("post-commit cleanup journal is missing after final-path publication")
+        for entry in journal["entries"]:
+            validate_cleanup_entry_state(target, entry)
+    except MiMoCodeSetupError as exc:
+        raise CommittedLifecycleError(str(exc)) from exc
+    return True
+
+
+def recovery_alias_final_name(name: str) -> str | None:
+    if not name.startswith("."):
+        return None
+    marker = ".nddev.tmp."
+    body = name[1:]
+    if marker not in body:
+        return None
+    final_name, suffix = body.split(marker, 1)
+    if not is_recovery_intent_name(final_name):
+        return None
+    parts = suffix.split(".")
+    if len(parts) != 2 or not all(part.isdecimal() and part for part in parts):
+        return None
+    return final_name
+
+
+def recovery_directory_children(directory: Path) -> tuple[list[Path], list[Path], list[Path]]:
+    finals: list[Path] = []
+    aliases: list[Path] = []
+    unknown: list[Path] = []
+    for child in sorted(directory.iterdir(), key=lambda item: item.name):
+        if is_recovery_intent_name(child.name):
+            finals.append(child)
+            continue
+        if recovery_alias_final_name(child.name) is not None:
+            aliases.append(child)
+            continue
+        unknown.append(child)
+    return finals, aliases, unknown
+
+
+def ensure_no_precommit_recovery_state(target: Path) -> None:
+    directory = recovery_directory(target)
+    if not path_present(directory):
+        return
+    require_private_directory(directory, "pre-commit recovery directory")
+    fail(
+        "target has pending pre-commit recovery state; run a mutating lifecycle command to recover it"
+    )
+
+
+def recover_recovery_directory_publication_aliases(target: Path) -> list[Path]:
+    directory = recovery_directory(target)
+    require_private_directory(directory, "pre-commit recovery directory")
+    finals, aliases, unknown = recovery_directory_children(directory)
+    if unknown:
+        fail("pre-commit recovery directory contains unknown state")
+    final_by_name = {path.name: path for path in finals}
+    for alias in aliases:
+        final_name = recovery_alias_final_name(alias.name)
+        if final_name is None:
+            fail("pre-commit recovery directory contains an unknown publication alias")
+        final_path = final_by_name.get(final_name)
+        if final_path is None:
+            require_regular_file(
+                alias,
+                "orphaned pre-commit recovery publication alias",
+                owner_only=True,
+                max_bytes=PRECOMMIT_RECOVERY_INTENT_MAX_BYTES,
+            )
+            unlink_file_durable(alias)
+            continue
+        final_info = final_path.lstat()
+        alias_info = alias.lstat()
+        if identity_of(final_info) != identity_of(alias_info):
+            fail("pre-commit recovery publication alias does not match the final intent")
+        recover_recovery_intent_publication_alias(final_path)
+    finals, aliases, unknown = recovery_directory_children(directory)
+    if aliases or unknown:
+        fail("pre-commit recovery directory contains incomplete publication state")
+    return finals
+
+
+def recovery_entry_path_state(target: Path, path: Path, entry: dict[str, Any], label: str) -> str:
+    if not path_present(path):
+        return "absent"
+    if recovery_path_matches_tree(path, entry["tree"], label):
+        return "exact"
+    return "changed"
+
+
+def rollback_recovery_move(target: Path, entry: dict[str, Any]) -> None:
+    source = target / Path(entry["source_relative"])
+    if not entry["present"]:
+        if path_present(source):
+            cleanup_generated_recovery_path(
+                source, f"pre-commit recovery created source {entry['source_relative']}"
+            )
+        return
+    stash = target / Path(entry["stash_relative"])
+    source_state = recovery_entry_path_state(target, source, entry, "pre-commit recovery source")
+    stash_state = recovery_entry_path_state(target, stash, entry, "pre-commit recovery stash")
+    if source_state == "exact" and stash_state == "absent":
+        return
+    if source_state == "exact" and stash_state == "exact":
+        fail("pre-commit recovery found duplicate exact source and stash state")
+    if stash_state != "exact":
+        fail("pre-commit recovery stash is missing or changed")
+    if source_state == "changed":
+        cleanup_generated_recovery_path(
+            source, f"pre-commit recovery current source {entry['source_relative']}"
+        )
+    elif source_state != "absent":
+        fail("pre-commit recovery source is incoherent")
+    ensure_private_directory_under_target(
+        target, Path(entry["source_relative"]).parent, "pre-commit recovery restore parent"
+    )
+    os.replace(stash, source)
+    fsync_directory_with_retries(source.parent, "pre-commit recovery source parent after restore")
+    fsync_directory_with_retries(stash.parent, "pre-commit recovery stash parent after restore")
+    if not recovery_path_matches_tree(source, entry["tree"], "pre-commit recovery restored source"):
+        fail_concurrent("pre-commit recovery did not restore exact source state")
+
+
+def rollback_recovery_intent(target: Path, intent: dict[str, Any]) -> None:
+    stash_relatives = {
+        Path(entry["stash_relative"])
+        for entry in intent["moves"]
+        if entry["present"] and entry["stash_relative"] is not None
+    }
+
+    def generated_contains_stash(entry: dict[str, Any]) -> bool:
+        relative = Path(entry["relative_path"])
+        return any(stash == relative or relative in stash.parents for stash in stash_relatives)
+
+    for entry in sorted(
+        (entry for entry in intent["generated_paths"] if not generated_contains_stash(entry)),
+        key=lambda item: len(Path(item["relative_path"]).parts),
+        reverse=True,
+    ):
+        cleanup_generated_recovery_path(
+            target / Path(entry["relative_path"]),
+            f"pre-commit recovery generated path {entry['label']}",
+        )
+    for entry in reversed(intent["moves"]):
+        rollback_recovery_move(target, entry)
+    for entry in sorted(
+        (entry for entry in intent["generated_paths"] if generated_contains_stash(entry)),
+        key=lambda item: len(Path(item["relative_path"]).parts),
+        reverse=True,
+    ):
+        cleanup_generated_recovery_path(
+            target / Path(entry["relative_path"]),
+            f"pre-commit recovery generated path {entry['label']}",
+        )
+    remove_created_recovery_parent_dirs(target, intent["created_directory_candidates"])
+    restore_directory_object_snapshot(
+        target,
+        directory_snapshot_from_recovery_records(intent["directory_snapshot"]),
+        "pre-commit recovery",
+    )
+
+
+def retire_precommit_recovery_intent(target: Path, path: Path) -> None:
+    directory = recovery_directory(target)
+    if path_present(path):
+        intent = read_recovery_intent_file(path, allow_publication_alias=False)
+        validate_recovery_intent(intent, target)
+        unlink_file_durable(path)
+    if path_present(directory):
+        require_private_directory(directory, "pre-commit recovery directory")
+        finals, aliases, unknown = recovery_directory_children(directory)
+        if finals or aliases or unknown:
+            return
+        rmdir_if_empty_durable(directory)
+
+
+def recover_one_precommit_intent(
+    target: Path, path: Path, *, final_cleanup_committed: bool
+) -> DirectoryObjectSnapshot | None:
+    recover_recovery_intent_publication_alias(path)
+    intent = validate_recovery_intent(
+        read_recovery_intent_file(path, allow_publication_alias=False), target
+    )
+    directory_snapshot = directory_snapshot_from_recovery_records(intent["directory_snapshot"])
+    if final_cleanup_committed:
+        retire_precommit_recovery_intent(target, path)
+        return None
+    rollback_recovery_intent(target, intent)
+    retire_precommit_recovery_intent(target, path)
+    restore_directory_object_snapshot(target, directory_snapshot, "pre-commit recovery retirement")
+    return directory_snapshot
+
+
+def recover_precommit_transactions(target: Path) -> bool:
+    directory = recovery_directory(target)
+    if not path_present(directory):
+        return False
+    finals = recover_recovery_directory_publication_aliases(target)
+    if not finals:
+        rmdir_if_empty_durable(directory)
+        return True
+    final_cleanup_committed = False
+    if path_present(postcommit_cleanup_journal_path(target)):
+        final_cleanup_committed = (
+            load_postcommit_cleanup_journal(target, recover_publication_alias=True) is not None
+        )
+    pre_final_directory_snapshot: DirectoryObjectSnapshot | None = None
+    for path in sorted(finals, key=lambda item: item.name):
+        directory_snapshot = recover_one_precommit_intent(
+            target, path, final_cleanup_committed=final_cleanup_committed
+        )
+        if pre_final_directory_snapshot is None and directory_snapshot is not None:
+            pre_final_directory_snapshot = directory_snapshot
+    if path_present(directory):
+        require_private_directory(directory, "pre-commit recovery directory")
+        finals, aliases, unknown = recovery_directory_children(directory)
+        if finals or aliases or unknown:
+            fail("pre-commit recovery directory contains unretired state")
+        rmdir_if_empty_durable(directory)
+    if not final_cleanup_committed and pre_final_directory_snapshot is not None:
+        restore_directory_object_snapshot(
+            target, pre_final_directory_snapshot, "pre-commit recovery final retirement"
+        )
+    return True
+
+
 def ensure_no_existing_cleanup_journal(target: Path, allowed_sources: set[Path]) -> None:
     directory = postcommit_cleanup_directory(target)
     if path_present(directory):
         require_private_directory(directory, "post-commit cleanup directory")
-        aliases, unknown = cleanup_directory_publication_aliases(directory, postcommit_cleanup_journal_path(target))
+        aliases, unknown = cleanup_directory_publication_aliases(
+            directory, postcommit_cleanup_journal_path(target)
+        )
         if path_present(postcommit_cleanup_journal_path(target)) or aliases or unknown:
             fail("post-commit cleanup journal is already pending")
     residue = cleanup_namespace_residue(target, allowed_sources)
@@ -3009,7 +4159,9 @@ def publish_postcommit_cleanup_journal_no_replace(target: Path, journal: dict[st
         linked = True
         try:
             unlink_file_durable(temporary)
-            fsync_directory_with_retries(directory, "post-commit cleanup directory after journal publish")
+            fsync_directory_with_retries(
+                directory, "post-commit cleanup directory after journal publish"
+            )
             loaded = load_postcommit_cleanup_journal(target, recover_publication_alias=False)
             if loaded != journal:
                 fail_concurrent("post-commit cleanup journal changed during publication")
@@ -3029,13 +4181,21 @@ def move_cleanup_sources_back(moved: list[tuple[Path, Path]]) -> None:
     for source, destination in reversed(moved):
         if path_present(destination):
             if path_present(source):
-                fail_concurrent(f"post-commit cleanup rollback source already exists: {source.name}")
+                fail_concurrent(
+                    f"post-commit cleanup rollback source already exists: {source.name}"
+                )
             os.replace(destination, source)
-            fsync_directory_with_retries(source.parent, "post-commit cleanup rollback source parent")
-            fsync_directory_with_retries(destination.parent, "post-commit cleanup rollback cleanup parent")
+            fsync_directory_with_retries(
+                source.parent, "post-commit cleanup rollback source parent"
+            )
+            fsync_directory_with_retries(
+                destination.parent, "post-commit cleanup rollback cleanup parent"
+            )
 
 
-def promote_cleanup_sources(target: Path, paths: list[tuple[Path, str]]) -> tuple[list[tuple[Path, str]], list[tuple[Path, Path]]]:
+def promote_cleanup_sources(
+    target: Path, paths: list[tuple[Path, str]]
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, Path]], PrecommitRecoveryIntent | None]:
     cleanup_directory = postcommit_cleanup_directory(target)
     cleanup_directory_existed = path_present(cleanup_directory)
     allowed_sources: set[Path] = set()
@@ -3052,11 +4212,38 @@ def promote_cleanup_sources(target: Path, paths: list[tuple[Path, str]]) -> tupl
         allowed_sources.add(relative)
         candidates.append((source, label))
     if not candidates:
-        return [], []
+        return [], [], None
     if len(candidates) > POSTCOMMIT_CLEANUP_MAX_ENTRIES:
         fail("post-commit cleanup journal would exceed its bounded entry count")
     ensure_no_existing_cleanup_journal(target, allowed_sources)
-    ensure_private_directory_under_target(target, Path(POSTCOMMIT_CLEANUP_DIRECTORY_NAME), "post-commit cleanup directory")
+    moves: list[dict[str, Any]] = []
+    generated: list[dict[str, Any]] = []
+    if not cleanup_directory_existed:
+        generated.append(
+            recovery_generated_entry(
+                cleanup_directory.relative_to(target), "post-commit cleanup directory"
+            )
+        )
+    for source, label in candidates:
+        destination = cleanup_directory / source.name
+        moves.append(
+            recovery_move_entry_for_directory(
+                source,
+                destination.relative_to(target),
+                target,
+                f"post-commit cleanup source {label}",
+            )
+        )
+    promotion_intent = PrecommitRecoveryIntent(
+        target,
+        "post-commit cleanup promotion",
+        moves=moves,
+        generated_paths=generated,
+        directory_snapshot=directory_object_snapshot(target),
+    )
+    ensure_private_directory_under_target(
+        target, Path(POSTCOMMIT_CLEANUP_DIRECTORY_NAME), "post-commit cleanup directory"
+    )
     promoted: list[tuple[Path, str]] = []
     moved: list[tuple[Path, Path]] = []
     try:
@@ -3068,19 +4255,23 @@ def promote_cleanup_sources(target: Path, paths: list[tuple[Path, str]]) -> tupl
             if path_present(destination):
                 fail(f"post-commit cleanup destination already exists: {relative_destination}")
             os.replace(source, destination)
-            fsync_directory_with_retries(source.parent, "post-commit cleanup source parent after promote")
-            fsync_directory_with_retries(destination.parent, "post-commit cleanup parent after promote")
+            fsync_directory_with_retries(
+                source.parent, "post-commit cleanup source parent after promote"
+            )
+            fsync_directory_with_retries(
+                destination.parent, "post-commit cleanup parent after promote"
+            )
             moved.append((source, destination))
             promoted.append((destination, label))
-        return promoted, moved
+        return promoted, moved, promotion_intent
     except BaseException:
-        move_cleanup_sources_back(moved)
-        if not cleanup_directory_existed:
-            cleanup_path_with_retries(cleanup_directory, raise_on_failure=True)
+        promotion_intent.rollback()
         raise
 
 
-def remove_cleanup_journal_or_keep_pending(target: Path, journal: dict[str, Any], *, fail_on_error: bool) -> bool:
+def remove_cleanup_journal_or_keep_pending(
+    target: Path, journal: dict[str, Any], *, fail_on_error: bool
+) -> bool:
     directory = postcommit_cleanup_directory(target)
     journal_path = postcommit_cleanup_journal_path(target)
     try:
@@ -3092,7 +4283,11 @@ def remove_cleanup_journal_or_keep_pending(target: Path, journal: dict[str, Any]
         try:
             if not path_present(journal_path):
                 if not path_present(directory):
-                    ensure_private_directory_under_target(target, Path(POSTCOMMIT_CLEANUP_DIRECTORY_NAME), "post-commit cleanup directory")
+                    ensure_private_directory_under_target(
+                        target,
+                        Path(POSTCOMMIT_CLEANUP_DIRECTORY_NAME),
+                        "post-commit cleanup directory",
+                    )
                 publish_postcommit_cleanup_journal_no_replace(target, journal)
             load_postcommit_cleanup_journal(target, recover_publication_alias=True)
         except BaseException:
@@ -3103,8 +4298,12 @@ def remove_cleanup_journal_or_keep_pending(target: Path, journal: dict[str, Any]
         return True
 
 
-def drain_postcommit_cleanup(target: Path, *, fail_on_error: bool, recover_publication_alias: bool) -> bool:
-    journal = load_postcommit_cleanup_journal(target, recover_publication_alias=recover_publication_alias)
+def drain_postcommit_cleanup(
+    target: Path, *, fail_on_error: bool, recover_publication_alias: bool
+) -> bool:
+    journal = load_postcommit_cleanup_journal(
+        target, recover_publication_alias=recover_publication_alias
+    )
     if journal is None:
         return False
     try:
@@ -3115,7 +4314,9 @@ def drain_postcommit_cleanup(target: Path, *, fail_on_error: bool, recover_publi
             root_path = target / Path(entry["relative_path"])
             if state == "present":
                 validate_cleanup_entry_state(target, entry, require_full=True)
-            for record in sorted(entry["tree"], key=lambda item: len(Path(item["relative_path"]).parts), reverse=True):
+            for record in sorted(
+                entry["tree"], key=lambda item: len(Path(item["relative_path"]).parts), reverse=True
+            ):
                 record_relative = Path(record["relative_path"])
                 path = root_path if record_relative == Path(".") else root_path / record_relative
                 if not path_present(path):
@@ -3126,7 +4327,10 @@ def drain_postcommit_cleanup(target: Path, *, fail_on_error: bool, recover_publi
                 else:
                     validate_cleanup_directory_before_delete(path, record)
                     rmdir_if_empty_durable(path)
-                fsync_directory_with_retries(postcommit_cleanup_directory(target), "post-commit cleanup parent after tombstone drain")
+                fsync_directory_with_retries(
+                    postcommit_cleanup_directory(target),
+                    "post-commit cleanup parent after tombstone drain",
+                )
         for entry in journal["entries"]:
             if validate_cleanup_entry_state(target, entry) != "absent":
                 fail_concurrent("post-commit cleanup tombstone remained after drain")
@@ -3137,11 +4341,19 @@ def drain_postcommit_cleanup(target: Path, *, fail_on_error: bool, recover_publi
         return True
 
 
-def commit_postcondition_cleanup(target: Path, paths: list[tuple[Path, str]]) -> bool:
-    promoted, moved = promote_cleanup_sources(target, paths)
+def commit_postcondition_cleanup(
+    target: Path,
+    paths: list[tuple[Path, str]],
+    *,
+    precommit_intents: list[PrecommitRecoveryIntent] | None = None,
+) -> bool:
+    intents = list(precommit_intents or [])
+    promoted, _moved, promotion_intent = promote_cleanup_sources(target, paths)
     if not promoted:
+        for intent in intents:
+            intent.retire()
         return False
-    committed = False
+    journal_visible = False
     try:
         entries = [cleanup_entry_for_path(target, path, label) for path, label in promoted]
         journal = {
@@ -3154,22 +4366,39 @@ def commit_postcondition_cleanup(target: Path, paths: list[tuple[Path, str]]) ->
             "entries": entries,
         }
         publication_pending = publish_postcommit_cleanup_journal_no_replace(target, journal)
-        committed = True
+        journal_visible = True
         if publication_pending:
-            return True
-        return drain_postcommit_cleanup(target, fail_on_error=False, recover_publication_alias=True)
-    except BaseException:
-        if not committed:
-            move_cleanup_sources_back(moved)
-            cleanup_path_with_retries(postcommit_cleanup_directory(target))
-        raise
+            return validate_committed_cleanup_pending(target)
+        try:
+            for intent in intents:
+                intent.retire()
+            if promotion_intent is not None:
+                promotion_intent.retire()
+            return drain_postcommit_cleanup(
+                target, fail_on_error=False, recover_publication_alias=True
+            )
+        except BaseException:
+            return validate_committed_cleanup_pending(target)
+    except BaseException as exc:
+        if not journal_visible:
+            if promotion_intent is not None:
+                promotion_intent.rollback()
+            raise
+        try:
+            return validate_committed_cleanup_pending(target)
+        except CommittedLifecycleError as committed_error:
+            raise committed_error from exc
 
 
 def drain_cleanup_before_mutation(target: Path) -> bool:
-    had_pending = load_postcommit_cleanup_journal(target, recover_publication_alias=True) is not None
+    had_pending = (
+        load_postcommit_cleanup_journal(target, recover_publication_alias=True) is not None
+    )
     if not had_pending:
         return False
-    still_pending = drain_postcommit_cleanup(target, fail_on_error=True, recover_publication_alias=True)
+    still_pending = drain_postcommit_cleanup(
+        target, fail_on_error=True, recover_publication_alias=True
+    )
     if still_pending:
         fail("post-commit cleanup drain did not complete before mutation")
     return True
@@ -3191,7 +4420,9 @@ def copy_tree_durable(source: Path, destination: Path) -> None:
         elif stat.S_ISREG(item_info.st_mode):
             target_path.parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
             target_path.parent.chmod(OWNER_DIRECTORY_MODE)
-            content, _ = read_regular_file(item, f"copy source file {relative}", max_bytes=MANAGED_PAYLOAD_MAX_BYTES)
+            content, _ = read_regular_file(
+                item, f"copy source file {relative}", max_bytes=MANAGED_PAYLOAD_MAX_BYTES
+            )
             write_durable_file(target_path, content, stat.S_IMODE(item_info.st_mode))
         else:
             fail(f"copy source contains unsupported path type: {relative}")
@@ -3209,7 +4440,9 @@ def write_backup_envelope(slot_dir: Path, envelope: dict[str, Any]) -> None:
     write_durable_file(slot_dir / BACKUP_NAME, canonical_json(envelope), OWNER_FILE_MODE)
 
 
-def copy_backup_slot(source: Path, destination: Path, target: Path, source_slot: int, new_slot: int) -> None:
+def copy_backup_slot(
+    source: Path, destination: Path, target: Path, source_slot: int, new_slot: int
+) -> None:
     envelope, files = load_backup_slot(target, source, source_slot)
     destination.mkdir(mode=OWNER_DIRECTORY_MODE)
     destination.chmod(OWNER_DIRECTORY_MODE)
@@ -3223,7 +4456,7 @@ def copy_backup_slot(source: Path, destination: Path, target: Path, source_slot:
 def restore_backup_pool_from_source(
     target: Path,
     source: Path | None,
-    expected_snapshot: dict[str, tuple[str, int, str | None]],
+    expected_snapshot: dict[str, Any],
 ) -> None:
     pool = backup_pool(target)
     last: BaseException | None = None
@@ -3249,8 +4482,8 @@ def restore_backup_pool_from_source(
 def publish_backup_pool(
     target: Path,
     staged_pool: Path,
-    expected_before: dict[str, tuple[str, int, str | None]],
-) -> list[tuple[Path, str]]:
+    expected_before: dict[str, Any],
+) -> tuple[list[tuple[Path, str]], PrecommitRecoveryIntent]:
     pool = backup_pool(target)
     actual_before = backup_pool_snapshot(target)
     if actual_before != expected_before:
@@ -3259,16 +4492,32 @@ def publish_backup_pool(
     recovery_pool = target / f".{pool.name}.recovery.{os.getpid()}.{time.time_ns()}"
     retired_pool = target / f".{pool.name}.retired.{os.getpid()}.{time.time_ns()}"
     pool_was_present = path_present(pool)
-    moved_old = False
-    installed_new = False
+    moves: list[dict[str, Any]] = []
+    if pool_was_present:
+        moves.append(
+            recovery_move_entry_for_directory(
+                pool, retired_pool.relative_to(target), target, "backup pool pre-state"
+            )
+        )
+    publish_intent = PrecommitRecoveryIntent(
+        target,
+        "backup pool publish",
+        moves=moves,
+        generated_paths=[
+            recovery_generated_entry(pool.relative_to(target), "new backup pool after publish"),
+            recovery_generated_entry(staged_pool.relative_to(target), "staged backup pool"),
+            recovery_generated_entry(
+                recovery_pool.relative_to(target), "backup pool recovery copy"
+            ),
+        ],
+        directory_snapshot=directory_object_snapshot(target),
+    )
     try:
         if pool_was_present:
             copy_tree_durable(pool, recovery_pool)
             os.replace(pool, retired_pool)
-            moved_old = True
             fsync_directory(target, "target directory after backup pool staging")
         os.replace(staged_pool, pool)
-        installed_new = True
         fsync_directory(target, "target directory after backup pool replace")
         if backup_pool_snapshot(target) != desired_snapshot:
             fail_concurrent("backup pool publication did not produce exact desired state")
@@ -3277,25 +4526,17 @@ def publish_backup_pool(
             pending.append((retired_pool, "retired backup pool"))
         if path_present(recovery_pool):
             pending.append((recovery_pool, "backup pool recovery copy"))
-        return pending
+        return pending, publish_intent
     except BaseException:
-        if installed_new and path_present(pool):
-            cleanup_path_with_retries(pool, raise_on_failure=True)
-        restore_source = retired_pool if path_present(retired_pool) else recovery_pool if path_present(recovery_pool) else None
-        restore_backup_pool_from_source(target, restore_source, expected_before)
-        cleanup_path_with_retries(staged_pool, raise_on_failure=True)
-        cleanup_path_with_retries(retired_pool, raise_on_failure=True)
-        cleanup_path_with_retries(recovery_pool, raise_on_failure=True)
-        fsync_directory_with_retries(target, "target directory after backup pool rollback")
+        publish_intent.rollback()
         raise
 
 
-def stage_backup_pool(target: Path, state: dict[str, Any]) -> Path:
+def stage_backup_pool(target: Path, state: dict[str, Any], staged_pool: Path) -> Path:
     pool = backup_pool(target)
     if path_present(pool):
         require_private_directory(pool, "backup pool")
         validate_backup_pool_marker(target, pool)
-    staged_pool = target / f".{pool.name}.stage.{os.getpid()}.{time.time_ns()}"
     staged_pool.mkdir(mode=OWNER_DIRECTORY_MODE)
     try:
         staged_pool.chmod(OWNER_DIRECTORY_MODE)
@@ -3313,7 +4554,9 @@ def stage_backup_pool(target: Path, state: dict[str, Any]) -> Path:
         managed_files = list(state["managed_files"])
         for raw_relative in [*managed_files, STAMP_NAME]:
             relative = Path(raw_relative)
-            content, _ = read_regular_file(target / relative, f"managed file {relative}", owner_only=True)
+            content, _ = read_regular_file(
+                target / relative, f"managed file {relative}", owner_only=True
+            )
             files[relative] = content
             write_backup_file(slot_dir, relative, content)
         envelope = {
@@ -3338,46 +4581,62 @@ def stage_backup_pool(target: Path, state: dict[str, Any]) -> Path:
 def prepare_backup_transaction(
     target: Path,
     state: dict[str, Any],
-) -> tuple[dict[str, tuple[str, int, str | None]], Path | None, Path]:
+) -> tuple[dict[str, Any], Path | None, Path, list[PrecommitRecoveryIntent]]:
     before = backup_pool_snapshot(target)
     recovery: Path | None = None
     pool = backup_pool(target)
+    staged = target / f".{pool.name}.stage.{os.getpid()}.{time.time_ns()}"
+    generated = [recovery_generated_entry(staged.relative_to(target), "staged backup pool")]
+    if path_present(pool):
+        recovery = target / f".{pool.name}.lifecycle.recovery.{os.getpid()}.{time.time_ns()}"
+        generated.append(
+            recovery_generated_entry(recovery.relative_to(target), "lifecycle backup recovery copy")
+        )
+    stage_intent = PrecommitRecoveryIntent(
+        target,
+        "backup pool stage",
+        generated_paths=generated,
+        directory_snapshot=directory_object_snapshot(target),
+    )
     try:
         if path_present(pool):
-            recovery = target / f".{pool.name}.lifecycle.recovery.{os.getpid()}.{time.time_ns()}"
             copy_tree_durable(pool, recovery)
-        staged = stage_backup_pool(target, state)
-        return before, recovery, staged
+        stage_backup_pool(target, state, staged)
+        return before, recovery, staged, [stage_intent]
     except BaseException:
-        if recovery is not None:
-            cleanup_path_with_retries(recovery, raise_on_failure=True)
+        stage_intent.rollback()
         raise
 
 
 def rollback_backup_transaction(
     target: Path,
-    before: dict[str, tuple[str, int, str | None]],
+    before: dict[str, Any],
     recovery: Path | None,
     staged: Path | None,
+    intents: list[PrecommitRecoveryIntent],
 ) -> None:
+    for intent in reversed(intents):
+        intent.rollback()
     if staged is not None:
         cleanup_path_with_retries(staged, raise_on_failure=True)
     if backup_pool_snapshot(target) != before:
-        restore_backup_pool_from_source(target, recovery if recovery is not None and path_present(recovery) else None, before)
+        restore_backup_pool_from_source(
+            target, recovery if recovery is not None and path_present(recovery) else None, before
+        )
     if recovery is not None:
         cleanup_path_with_retries(recovery, raise_on_failure=True)
 
 
 def finish_backup_transaction(
     target: Path,
-    before: dict[str, tuple[str, int, str | None]],
+    before: dict[str, Any],
     recovery: Path | None,
     staged: Path,
-) -> tuple[int, list[tuple[Path, str]]]:
-    pending = publish_backup_pool(target, staged, before)
+) -> tuple[int, list[tuple[Path, str]], PrecommitRecoveryIntent]:
+    pending, publish_intent = publish_backup_pool(target, staged, before)
     if recovery is not None:
         pending.append((recovery, "lifecycle backup recovery copy"))
-    return 0, pending
+    return 0, pending, publish_intent
 
 
 def find_backup_slot(target: Path, slot: int) -> Path:
@@ -3395,7 +4654,9 @@ def find_backup_slot(target: Path, slot: int) -> Path:
     fail("backup pool is missing")
 
 
-def load_backup_slot(target: Path, slot_dir: Path, slot: int) -> tuple[dict[str, Any], dict[Path, bytes]]:
+def load_backup_slot(
+    target: Path, slot_dir: Path, slot: int
+) -> tuple[dict[str, Any], dict[Path, bytes]]:
     require_private_directory(slot_dir, f"backup slot {slot}")
     envelope = load_json_object(slot_dir / BACKUP_NAME, "backup envelope", owner_only=True)
     require_exact_keys(envelope, BACKUP_KEYS, "backup envelope")
@@ -3406,7 +4667,9 @@ def load_backup_slot(target: Path, slot_dir: Path, slot: int) -> tuple[dict[str,
     if envelope["canonical_target"] != str(target):
         fail("backup belongs to a different canonical target")
     managed_files = envelope["managed_files"]
-    if not isinstance(managed_files, list) or not all(isinstance(item, str) for item in managed_files):
+    if not isinstance(managed_files, list) or not all(
+        isinstance(item, str) for item in managed_files
+    ):
         fail("backup envelope managed_files must be a string list")
     expected_paths = [Path(raw) for raw in [*managed_files, STAMP_NAME]]
     if len({str(path) for path in expected_paths}) != len(expected_paths):
@@ -3419,7 +4682,11 @@ def load_backup_slot(target: Path, slot_dir: Path, slot: int) -> tuple[dict[str,
         if not isinstance(record, dict):
             fail("backup envelope file record must be an object")
         require_exact_keys(record, {"path", "size", "sha256"}, "backup envelope file record")
-        if not isinstance(record["path"], str) or not isinstance(record["size"], int) or not isinstance(record["sha256"], str):
+        if (
+            not isinstance(record["path"], str)
+            or not isinstance(record["size"], int)
+            or not isinstance(record["sha256"], str)
+        ):
             fail("backup envelope file record has invalid value types")
         if re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is None:
             fail("backup envelope file record sha256 is invalid")
@@ -3435,7 +4702,9 @@ def load_backup_slot(target: Path, slot_dir: Path, slot: int) -> tuple[dict[str,
             fail("backup envelope contains an unsafe managed path")
         if relative not in ALL_MANAGED_PATHS:
             fail(f"backup envelope contains an unsupported managed path: {relative}")
-        content, _ = read_regular_file(slot_dir / relative, f"backup file {relative}", owner_only=True)
+        content, _ = read_regular_file(
+            slot_dir / relative, f"backup file {relative}", owner_only=True
+        )
         record = record_map[relative]
         if record["size"] != len(content) or record["sha256"] != sha256_bytes(content):
             fail(f"backup file record mismatch: {relative}")
@@ -3454,7 +4723,9 @@ def load_backup_slot(target: Path, slot_dir: Path, slot: int) -> tuple[dict[str,
             if relative not in expected_directories:
                 fail(f"backup slot contains unrecorded directory: {relative}")
             if not is_owner_private_directory(info):
-                fail(f"backup slot directory must be owned by the current user with mode 0700: {relative}")
+                fail(
+                    f"backup slot directory must be owned by the current user with mode 0700: {relative}"
+                )
             continue
         if relative not in expected_regular:
             fail(f"backup slot contains unrecorded payload: {relative}")
@@ -3480,11 +4751,16 @@ def restore_desired_from_backup(files: dict[Path, bytes]) -> dict[Path, bytes | 
 
 
 def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -> dict[str, Any]:
-    with locked_new_or_existing_target_state(target) as (canonical_target, target_existed_before, target_parent_record):
+    with locked_new_or_existing_target_state(target) as (
+        canonical_target,
+        target_existed_before,
+        target_parent_record,
+    ):
         managed_undo: FileUndoTransaction | None = None
-        backup_before: dict[str, tuple[str, int, str | None]] | None = None
+        backup_before: dict[str, Any] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
+        backup_intents: list[PrecommitRecoveryIntent] = []
         cleanup_drained = False
         cleanup_pending = False
         backup_cleanup_paths: list[tuple[Path, str]] = []
@@ -3495,7 +4771,9 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
                 fail("legacy managed target must be migrated before install, update, or switch")
             existing_config = read_existing_config_if_managed(canonical_target, state)
             metadata, desired = render_setup(setup_id, profile_id, existing_config=existing_config)
-            stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
+            stamp = bind_stamp(
+                parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target
+            )
             desired[Path(STAMP_NAME)] = canonical_json(stamp)
             changed = changed_paths(canonical_target, desired)
             backup_slot: int | None = None
@@ -3503,7 +4781,9 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
             snapshot = current_managed_object_snapshot(canonical_target)
             snapshot_payload = managed_payload_snapshot(snapshot)
             if state["state"] == "managed" and changed:
-                backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
+                backup_before, backup_recovery, staged_backup, backup_intents = (
+                    prepare_backup_transaction(canonical_target, state)
+                )
             if changed:
                 managed_undo = replace_managed_state(
                     canonical_target,
@@ -3515,19 +4795,34 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
             if changed:
                 verify_managed_state(canonical_target, desired, "managed postcondition")
             if staged_backup is not None and backup_before is not None:
-                backup_slot, backup_cleanup_paths = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                backup_slot, backup_cleanup_paths, backup_publish_intent = (
+                    finish_backup_transaction(
+                        canonical_target, backup_before, backup_recovery, staged_backup
+                    )
+                )
+                backup_intents.append(backup_publish_intent)
                 staged_backup = None
             else:
                 backup_cleanup_paths = []
             cleanup_paths = list(backup_cleanup_paths)
             if managed_undo is not None:
                 cleanup_paths.append((managed_undo.undo_root, "managed rollback preserve state"))
-            cleanup_pending = commit_postcondition_cleanup(canonical_target, cleanup_paths)
+            precommit_intents = list(backup_intents)
+            if managed_undo is not None:
+                precommit_intents.append(managed_undo.intent)
+            cleanup_pending = commit_postcondition_cleanup(
+                canonical_target, cleanup_paths, precommit_intents=precommit_intents
+            )
             managed_undo = None
             backup_recovery = None
-        except BaseException:
+            backup_intents = []
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if backup_before is not None:
-                rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                rollback_backup_transaction(
+                    canonical_target, backup_before, backup_recovery, staged_backup, backup_intents
+                )
             if managed_undo is not None:
                 managed_undo.rollback()
             else:
@@ -3536,7 +4831,9 @@ def mutate_setup(target: Path, setup_id: str, profile_id: str, operation: str) -
             for cleanup_path, _label in backup_cleanup_paths:
                 cleanup_path_with_retries(cleanup_path, raise_on_failure=True)
             if target_existed_before and "lifecycle_directories" in locals():
-                restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+                restore_directory_object_snapshot(
+                    canonical_target, lifecycle_directories, "lifecycle rollback"
+                )
             else:
                 rollback_created_target_if_absent(
                     canonical_target,
@@ -3572,23 +4869,30 @@ def update_setup(target: Path) -> dict[str, Any]:
         if not isinstance(profile_id, str):
             fail("managed target is missing a profile_id")
         existing_config = read_existing_config_if_managed(canonical_target, state)
-        metadata, desired = render_setup(state["setup_id"], profile_id, existing_config=existing_config)
-        stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
+        metadata, desired = render_setup(
+            state["setup_id"], profile_id, existing_config=existing_config
+        )
+        stamp = bind_stamp(
+            parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target
+        )
         desired[Path(STAMP_NAME)] = canonical_json(stamp)
         changed = changed_paths(canonical_target, desired)
         lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target)
         snapshot_payload = managed_payload_snapshot(snapshot)
         managed_undo: FileUndoTransaction | None = None
-        backup_before: dict[str, tuple[str, int, str | None]] | None = None
+        backup_before: dict[str, Any] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
+        backup_intents: list[PrecommitRecoveryIntent] = []
         backup_slot: int | None = None
         cleanup_pending = False
         backup_cleanup_paths: list[tuple[Path, str]] = []
         try:
             if changed:
-                backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
+                backup_before, backup_recovery, staged_backup, backup_intents = (
+                    prepare_backup_transaction(canonical_target, state)
+                )
                 managed_undo = replace_managed_state(
                     canonical_target,
                     desired,
@@ -3599,26 +4903,43 @@ def update_setup(target: Path) -> dict[str, Any]:
             if changed:
                 verify_managed_state(canonical_target, desired, "update postcondition")
             if staged_backup is not None and backup_before is not None:
-                backup_slot, backup_cleanup_paths = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                backup_slot, backup_cleanup_paths, backup_publish_intent = (
+                    finish_backup_transaction(
+                        canonical_target, backup_before, backup_recovery, staged_backup
+                    )
+                )
+                backup_intents.append(backup_publish_intent)
                 staged_backup = None
             else:
                 backup_cleanup_paths = []
             cleanup_paths = list(backup_cleanup_paths)
             if managed_undo is not None:
                 cleanup_paths.append((managed_undo.undo_root, "managed rollback preserve state"))
-            cleanup_pending = commit_postcondition_cleanup(canonical_target, cleanup_paths)
+            precommit_intents = list(backup_intents)
+            if managed_undo is not None:
+                precommit_intents.append(managed_undo.intent)
+            cleanup_pending = commit_postcondition_cleanup(
+                canonical_target, cleanup_paths, precommit_intents=precommit_intents
+            )
             managed_undo = None
             backup_recovery = None
-        except BaseException:
+            backup_intents = []
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if backup_before is not None:
-                rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                rollback_backup_transaction(
+                    canonical_target, backup_before, backup_recovery, staged_backup, backup_intents
+                )
             if managed_undo is not None:
                 managed_undo.rollback()
             else:
                 restore_snapshot(canonical_target, snapshot)
             for cleanup_path, _label in backup_cleanup_paths:
                 cleanup_path_with_retries(cleanup_path, raise_on_failure=True)
-            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+            restore_directory_object_snapshot(
+                canonical_target, lifecycle_directories, "lifecycle rollback"
+            )
             raise
     return {
         "ok": True,
@@ -3654,7 +4975,9 @@ def render_legacy_migration_desired(
 ) -> tuple[str, dict[Path, bytes | None]]:
     selected_profile = migration_profile_for_legacy(state, profile_id)
     existing_config = preserved_legacy_config_for_migration(target, state)
-    _metadata, rendered = render_setup(DEFAULT_SETUP_ID, selected_profile, existing_config=existing_config)
+    _metadata, rendered = render_setup(
+        DEFAULT_SETUP_ID, selected_profile, existing_config=existing_config
+    )
     desired: dict[Path, bytes | None] = dict(rendered)
     stamp = bind_stamp(parse_json_object(rendered[Path(STAMP_NAME)], "desired stamp"), target)
     desired[Path(STAMP_NAME)] = canonical_json(stamp)
@@ -3670,20 +4993,25 @@ def migrate_setup(target: Path, profile_id: str | None) -> dict[str, Any]:
         state = inspect_target(canonical_target)
         if state["state"] != "legacy-managed":
             fail("migrate requires a legacy managed target")
-        selected_profile, desired = render_legacy_migration_desired(canonical_target, state, profile_id)
+        selected_profile, desired = render_legacy_migration_desired(
+            canonical_target, state, profile_id
+        )
         changed = changed_paths(canonical_target, desired)
         lifecycle_directories = directory_object_snapshot(canonical_target)
         snapshot = current_managed_object_snapshot(canonical_target)
         snapshot_payload = managed_payload_snapshot(snapshot)
         managed_undo: FileUndoTransaction | None = None
-        backup_before: dict[str, tuple[str, int, str | None]] | None = None
+        backup_before: dict[str, Any] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
+        backup_intents: list[PrecommitRecoveryIntent] = []
         backup_slot: int | None = None
         cleanup_pending = False
         backup_cleanup_paths: list[tuple[Path, str]] = []
         try:
-            backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
+            backup_before, backup_recovery, staged_backup, backup_intents = (
+                prepare_backup_transaction(canonical_target, state)
+            )
             managed_undo = replace_managed_state(
                 canonical_target,
                 desired,
@@ -3692,23 +5020,36 @@ def migrate_setup(target: Path, profile_id: str | None) -> dict[str, Any]:
             )
             post = inspect_target(canonical_target, include_cleanup=False)
             verify_managed_state(canonical_target, desired, "migrate postcondition")
-            backup_slot, backup_cleanup_paths = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            backup_slot, backup_cleanup_paths, backup_publish_intent = finish_backup_transaction(
+                canonical_target, backup_before, backup_recovery, staged_backup
+            )
+            backup_intents.append(backup_publish_intent)
             staged_backup = None
             cleanup_paths = list(backup_cleanup_paths)
             cleanup_paths.append((managed_undo.undo_root, "managed rollback preserve state"))
-            cleanup_pending = commit_postcondition_cleanup(canonical_target, cleanup_paths)
+            precommit_intents = [*backup_intents, managed_undo.intent]
+            cleanup_pending = commit_postcondition_cleanup(
+                canonical_target, cleanup_paths, precommit_intents=precommit_intents
+            )
             managed_undo = None
             backup_recovery = None
-        except BaseException:
+            backup_intents = []
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if backup_before is not None:
-                rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                rollback_backup_transaction(
+                    canonical_target, backup_before, backup_recovery, staged_backup, backup_intents
+                )
             if managed_undo is not None:
                 managed_undo.rollback()
             else:
                 restore_snapshot(canonical_target, snapshot)
             for cleanup_path, _label in backup_cleanup_paths:
                 cleanup_path_with_retries(cleanup_path, raise_on_failure=True)
-            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+            restore_directory_object_snapshot(
+                canonical_target, lifecycle_directories, "lifecycle rollback"
+            )
             raise
     return {
         "ok": True,
@@ -3729,13 +5070,21 @@ def plan_setup(target: Path, setup_id: str, profile_id: str) -> dict[str, Any]:
         existing_config = read_existing_config_if_managed(canonical_target, state)
         _metadata, desired = render_setup(setup_id, profile_id, existing_config=existing_config)
         if state["state"] == "managed":
-            stamp = bind_stamp(parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target)
+            stamp = bind_stamp(
+                parse_json_object(desired[Path(STAMP_NAME)], "desired stamp"), canonical_target
+            )
             desired[Path(STAMP_NAME)] = canonical_json(stamp)
             changed = changed_paths(canonical_target, desired)
-            operation = "switch" if state.get("setup_id") != setup_id or state.get("profile_id") != profile_id else "update"
+            operation = (
+                "switch"
+                if state.get("setup_id") != setup_id or state.get("profile_id") != profile_id
+                else "update"
+            )
             backup_required = bool(changed)
         elif state["state"] == "legacy-managed":
-            _selected_profile, migration_desired = render_legacy_migration_desired(canonical_target, state, profile_id)
+            _selected_profile, migration_desired = render_legacy_migration_desired(
+                canonical_target, state, profile_id
+            )
             changed = changed_paths(canonical_target, migration_desired)
             operation = "migrate"
             backup_required = True
@@ -3772,14 +5121,17 @@ def remove_setup(target: Path) -> dict[str, Any]:
         snapshot_payload = managed_payload_snapshot(snapshot)
         desired = {relative: None for relative in paths}
         managed_undo: FileUndoTransaction | None = None
-        backup_before: dict[str, tuple[str, int, str | None]] | None = None
+        backup_before: dict[str, Any] | None = None
         backup_recovery: Path | None = None
         staged_backup: Path | None = None
+        backup_intents: list[PrecommitRecoveryIntent] = []
         backup_slot: int | None = None
         cleanup_pending = False
         backup_cleanup_paths: list[tuple[Path, str]] = []
         try:
-            backup_before, backup_recovery, staged_backup = prepare_backup_transaction(canonical_target, state)
+            backup_before, backup_recovery, staged_backup, backup_intents = (
+                prepare_backup_transaction(canonical_target, state)
+            )
             managed_undo = replace_managed_state(
                 canonical_target,
                 desired,
@@ -3787,23 +5139,36 @@ def remove_setup(target: Path) -> dict[str, Any]:
                 cleanup_on_success=False,
             )
             verify_managed_state(canonical_target, desired, "remove postcondition")
-            backup_slot, backup_cleanup_paths = finish_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+            backup_slot, backup_cleanup_paths, backup_publish_intent = finish_backup_transaction(
+                canonical_target, backup_before, backup_recovery, staged_backup
+            )
+            backup_intents.append(backup_publish_intent)
             staged_backup = None
             cleanup_paths = list(backup_cleanup_paths)
             cleanup_paths.append((managed_undo.undo_root, "managed rollback preserve state"))
-            cleanup_pending = commit_postcondition_cleanup(canonical_target, cleanup_paths)
+            precommit_intents = [*backup_intents, managed_undo.intent]
+            cleanup_pending = commit_postcondition_cleanup(
+                canonical_target, cleanup_paths, precommit_intents=precommit_intents
+            )
             managed_undo = None
             backup_recovery = None
-        except BaseException:
+            backup_intents = []
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if backup_before is not None:
-                rollback_backup_transaction(canonical_target, backup_before, backup_recovery, staged_backup)
+                rollback_backup_transaction(
+                    canonical_target, backup_before, backup_recovery, staged_backup, backup_intents
+                )
             if managed_undo is not None:
                 managed_undo.rollback()
             else:
                 restore_snapshot(canonical_target, snapshot)
             for cleanup_path, _label in backup_cleanup_paths:
                 cleanup_path_with_retries(cleanup_path, raise_on_failure=True)
-            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+            restore_directory_object_snapshot(
+                canonical_target, lifecycle_directories, "lifecycle rollback"
+            )
             raise
     return {
         "ok": True,
@@ -3842,14 +5207,19 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
             cleanup_pending = commit_postcondition_cleanup(
                 canonical_target,
                 [(managed_undo.undo_root, "managed rollback preserve state")],
+                precommit_intents=[managed_undo.intent],
             )
             managed_undo = None
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if managed_undo is not None:
                 managed_undo.rollback()
             else:
                 restore_snapshot(canonical_target, snapshot)
-            restore_directory_object_snapshot(canonical_target, lifecycle_directories, "lifecycle rollback")
+            restore_directory_object_snapshot(
+                canonical_target, lifecycle_directories, "lifecycle rollback"
+            )
             raise
     return {
         "ok": True,
@@ -4074,9 +5444,16 @@ def software_status(target: Path, *, include_cleanup: bool = True) -> dict[str, 
         if presence:
             base["drift"] = ["software-incomplete"]
         return base
-    binary_bytes, binary_info = read_regular_file(executable, "MiMo Code executable", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES)
-    tree_bytes, tree_info = read_regular_file(tree_binary, "MiMo Code version tree executable", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES)
-    if stat.S_IMODE(binary_info.st_mode) != OWNER_EXECUTABLE_MODE or stat.S_IMODE(tree_info.st_mode) != OWNER_EXECUTABLE_MODE:
+    binary_bytes, binary_info = read_regular_file(
+        executable, "MiMo Code executable", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES
+    )
+    tree_bytes, tree_info = read_regular_file(
+        tree_binary, "MiMo Code version tree executable", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES
+    )
+    if (
+        stat.S_IMODE(binary_info.st_mode) != OWNER_EXECUTABLE_MODE
+        or stat.S_IMODE(tree_info.st_mode) != OWNER_EXECUTABLE_MODE
+    ):
         base["drift"] = ["software-executable-mode"]
         return base
     info = load_json_object(manifest, "software manifest", owner_only=True)
@@ -4113,8 +5490,18 @@ def software_status(target: Path, *, include_cleanup: bool = True) -> dict[str, 
         drift.append("asset_size")
     executable_baseline = asset.get("executable")
     if isinstance(executable_baseline, dict):
-        for key in ("archive_member_path", "archive_member_mode", "installer_binary_mode", "binary_size"):
-            expected_key = {"archive_member_path": "path", "archive_member_mode": "archive_mode", "installer_binary_mode": "installer_mode", "binary_size": "size"}[key]
+        for key in (
+            "archive_member_path",
+            "archive_member_mode",
+            "installer_binary_mode",
+            "binary_size",
+        ):
+            expected_key = {
+                "archive_member_path": "path",
+                "archive_member_mode": "archive_mode",
+                "installer_binary_mode": "installer_mode",
+                "binary_size": "size",
+            }[key]
             if info.get(key) != executable_baseline.get(expected_key):
                 drift.append(key)
         if binary_sha != executable_baseline.get("sha256"):
@@ -4125,7 +5512,14 @@ def software_status(target: Path, *, include_cleanup: bool = True) -> dict[str, 
         drift.append("binary_max_bytes")
     if info.get("binary_sha256") != binary_sha or tree_sha != binary_sha:
         drift.append("binary_sha256")
-    return {**base, "installed": True, "current": not drift, "version": info.get("version"), "drift": drift, "binary_sha256": binary_sha}
+    return {
+        **base,
+        "installed": True,
+        "current": not drift,
+        "version": info.get("version"),
+        "drift": drift,
+        "binary_sha256": binary_sha,
+    }
 
 
 def read_url(url: str, *, max_bytes: int, expected_size: int | None = None) -> bytes:
@@ -4164,7 +5558,11 @@ def read_url(url: str, *, max_bytes: int, expected_size: int | None = None) -> b
 
 def validate_archive_member_path(name: str) -> None:
     normalized = name.replace("\\", "/")
-    if "\x00" in normalized or normalized.startswith("//") or re.fullmatch(r"[A-Za-z]:.*", normalized):
+    if (
+        "\x00" in normalized
+        or normalized.startswith("//")
+        or re.fullmatch(r"[A-Za-z]:.*", normalized)
+    ):
         fail(f"unsafe archive member path: {name}")
     path = Path(normalized)
     if path.is_absolute() or ".." in path.parts:
@@ -4199,7 +5597,13 @@ def extract_verified_binary(archive_bytes: bytes, asset_name: str) -> tuple[str,
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     fail(f"cannot read archive member: {member.name}")
-                candidates.append((member.name, stat.S_IMODE(member.mode), extracted.read(SOFTWARE_EXECUTABLE_MAX_BYTES + 1)))
+                candidates.append(
+                    (
+                        member.name,
+                        stat.S_IMODE(member.mode),
+                        extracted.read(SOFTWARE_EXECUTABLE_MAX_BYTES + 1),
+                    )
+                )
     if len(candidates) != 1:
         fail(f"archive must contain exactly one MiMo Code executable, found {len(candidates)}")
     name, mode, data = candidates[0]
@@ -4308,12 +5712,19 @@ def run_official_installer(
         except subprocess.TimeoutExpired:
             fail("MiMo Code official installer timed out")
         if completed.returncode != 0:
-            fail("MiMo Code official installer failed: " + (completed.stderr or completed.stdout).strip())
+            fail(
+                "MiMo Code official installer failed: "
+                + (completed.stderr or completed.stdout).strip()
+            )
         installed = home / ".mimocode" / "bin" / COMMAND_NAME
-        binary, info = read_regular_file(installed, "MiMo Code staged installer binary", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES)
+        binary, info = read_regular_file(
+            installed, "MiMo Code staged installer binary", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES
+        )
         installer_mode = stat.S_IMODE(info.st_mode)
         if installer_mode != OFFICIAL_INSTALLER_EXECUTABLE_MODE:
-            fail(f"MiMo Code staged installer binary must have official installer mode {OFFICIAL_INSTALLER_EXECUTABLE_MODE:04o}")
+            fail(
+                f"MiMo Code staged installer binary must have official installer mode {OFFICIAL_INSTALLER_EXECUTABLE_MODE:04o}"
+            )
         probe_env = minimal_process_env(installed.parent, tmp_dir=tmp_dir)
         probe_home = stage / "probe-home"
         probe_config = stage / "probe-config"
@@ -4360,7 +5771,9 @@ def run_official_installer(
         }
 
 
-def snapshot_optional_file(path: Path, label: str, *, max_bytes: int) -> tuple[bytes | None, int | None]:
+def snapshot_optional_file(
+    path: Path, label: str, *, max_bytes: int
+) -> tuple[bytes | None, int | None]:
     if not path_present(path):
         return None, None
     content, info = read_regular_file(path, label, max_bytes=max_bytes)
@@ -4389,7 +5802,9 @@ def software_max_bytes(relative: Path) -> int:
 def current_software_snapshot(target: Path) -> dict[Path, tuple[bytes | None, int | None]]:
     snapshot: dict[Path, tuple[bytes | None, int | None]] = {}
     for relative in software_file_modes():
-        snapshot[relative] = snapshot_optional_file(target / relative, f"software file {relative}", max_bytes=software_max_bytes(relative))
+        snapshot[relative] = snapshot_optional_file(
+            target / relative, f"software file {relative}", max_bytes=software_max_bytes(relative)
+        )
     return snapshot
 
 
@@ -4409,7 +5824,9 @@ def current_software_object_snapshot(target: Path) -> FileObjectSnapshot:
     }
 
 
-def software_payload_snapshot(snapshot: FileObjectSnapshot) -> dict[Path, tuple[bytes | None, int | None]]:
+def software_payload_snapshot(
+    snapshot: FileObjectSnapshot,
+) -> dict[Path, tuple[bytes | None, int | None]]:
     return {
         relative: (
             record["content"] if record.get("present") else None,
@@ -4419,19 +5836,25 @@ def software_payload_snapshot(snapshot: FileObjectSnapshot) -> dict[Path, tuple[
     }
 
 
-def verify_software_state(target: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str) -> None:
+def verify_software_state(
+    target: Path, desired: dict[Path, tuple[bytes | None, int | None]], label: str
+) -> None:
     for relative, (content, mode) in desired.items():
         path = target / relative
         if content is None:
             if path_present(path):
                 fail_concurrent(f"{label} left unexpected software file: {relative}")
             continue
-        actual, info = read_regular_file(path, f"{label} software file {relative}", max_bytes=software_max_bytes(relative))
+        actual, info = read_regular_file(
+            path, f"{label} software file {relative}", max_bytes=software_max_bytes(relative)
+        )
         if actual != content or stat.S_IMODE(info.st_mode) != mode:
             fail_concurrent(f"{label} software file mismatch: {relative}")
 
 
-def software_commit_order(state: dict[Path, tuple[bytes | None, int | None]], *, rollback: bool) -> list[Path]:
+def software_commit_order(
+    state: dict[Path, tuple[bytes | None, int | None]], *, rollback: bool
+) -> list[Path]:
     ordered = [
         SOFTWARE_VERSION_RELATIVE / COMMAND_NAME,
         Path("bin") / COMMAND_NAME,
@@ -4460,12 +5883,25 @@ def apply_software_state(
     before = software_payload_snapshot(before_objects)
     if expected_before is not None and before != expected_before:
         fail_concurrent(f"{label} pre-state changed before mutation")
+    staged_paths = {
+        relative: staged_file_path(target / relative)
+        for relative, (content, _mode) in desired.items()
+        if content is not None
+    }
+    generated_paths = [
+        recovery_generated_entry(
+            temporary.relative_to(target), f"{label} staged file {relative}", kind="file"
+        )
+        for relative, temporary in sorted(staged_paths.items(), key=lambda item: str(item[0]))
+    ]
     undo = FileUndoTransaction(
         target,
         before_objects,
         label=label,
         owner_only_for=software_owner_only,
         max_bytes_for=software_max_bytes,
+        generated_paths=generated_paths,
+        created_directory_candidates=parent_candidates_for(tuple(desired)),
     )
     staged: dict[Path, Path] = {}
 
@@ -4479,13 +5915,21 @@ def apply_software_state(
             if content is None:
                 continue
             ensure_private_parent(target, relative)
-            staged[relative] = create_staged_file(target / relative, content, mode or software_file_modes()[relative])
+            staged[relative] = create_staged_file_at(
+                staged_paths[relative],
+                content,
+                mode or software_file_modes()[relative],
+            )
         for relative in software_commit_order(desired, rollback=rollback_order):
             path = target / relative
             content, mode = desired[relative]
             if content is None:
                 if path_present(path):
-                    require_regular_file(path, f"{label} software file {relative}", max_bytes=software_max_bytes(relative))
+                    require_regular_file(
+                        path,
+                        f"{label} software file {relative}",
+                        max_bytes=software_max_bytes(relative),
+                    )
                     undo.hold(relative, path)
                 continue
             temporary = staged[relative]
@@ -4534,7 +5978,13 @@ def restore_software_snapshot_with_retries(
     desired = snapshot  # type: ignore[assignment]
     for attempt in range(3):
         try:
-            apply_software_state(target, desired, rollback_on_error=False, label=f"{label} attempt {attempt + 1}", rollback_order=True)
+            apply_software_state(
+                target,
+                desired,
+                rollback_on_error=False,
+                label=f"{label} attempt {attempt + 1}",
+                rollback_order=True,
+            )
             verify_software_state(target, desired, label)
             cleanup_transaction_residue(target)
             return
@@ -4545,7 +5995,9 @@ def restore_software_snapshot_with_retries(
         raise last
 
 
-def restore_software_snapshot(target: Path, snapshot: FileObjectSnapshot | dict[Path, tuple[bytes | None, int | None]]) -> None:
+def restore_software_snapshot(
+    target: Path, snapshot: FileObjectSnapshot | dict[Path, tuple[bytes | None, int | None]]
+) -> None:
     restore_software_snapshot_with_retries(target, snapshot, label="software rollback")
 
 
@@ -4567,9 +6019,24 @@ def validate_safe_software_presence(target: Path) -> None:
         if path_present(directory):
             require_private_directory(directory, label)
     for file_path, label, mode, max_bytes in (
-        (mimo_executable(target), f"bin/{COMMAND_NAME}", OWNER_EXECUTABLE_MODE, SOFTWARE_EXECUTABLE_MAX_BYTES),
-        (software_tree_binary(target), f"software/versions/{TESTED_VERSION}/{COMMAND_NAME}", OWNER_EXECUTABLE_MODE, SOFTWARE_EXECUTABLE_MAX_BYTES),
-        (software_manifest_path(target), "software/mimocode.json", OWNER_FILE_MODE, METADATA_MAX_BYTES),
+        (
+            mimo_executable(target),
+            f"bin/{COMMAND_NAME}",
+            OWNER_EXECUTABLE_MODE,
+            SOFTWARE_EXECUTABLE_MAX_BYTES,
+        ),
+        (
+            software_tree_binary(target),
+            f"software/versions/{TESTED_VERSION}/{COMMAND_NAME}",
+            OWNER_EXECUTABLE_MODE,
+            SOFTWARE_EXECUTABLE_MAX_BYTES,
+        ),
+        (
+            software_manifest_path(target),
+            "software/mimocode.json",
+            OWNER_FILE_MODE,
+            METADATA_MAX_BYTES,
+        ),
     ):
         if path_present(file_path):
             info = require_regular_file(file_path, label, max_bytes=max_bytes)
@@ -4579,7 +6046,11 @@ def validate_safe_software_presence(target: Path) -> None:
 
 def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
     require_supported_product_host()
-    with locked_new_or_existing_target_state(target) as (canonical_target, target_existed_before, target_parent_record):
+    with locked_new_or_existing_target_state(target) as (
+        canonical_target,
+        target_existed_before,
+        target_parent_record,
+    ):
         software_undo: FileUndoTransaction | None = None
         before_software: FileObjectSnapshot | None = None
         before_bin_dir: bool | None = None
@@ -4592,7 +6063,9 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
             cleanup_drained = drain_cleanup_before_mutation(canonical_target)
             status = software_status(canonical_target)
             if operation == "install-cli" and status["present"]:
-                fail("install-cli requires absent target-owned MiMo Code software presence; use update-cli")
+                fail(
+                    "install-cli requires absent target-owned MiMo Code software presence; use update-cli"
+                )
             if operation == "update-cli" and not status["present"]:
                 fail("update-cli requires existing target-owned MiMo Code software presence")
             if operation == "update-cli" and status["current"]:
@@ -4618,12 +6091,18 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
             expected_sha = asset.get("sha256")
             expected_size = asset.get("size")
             name = asset.get("name") or Path(str(url)).name
-            if not isinstance(url, str) or not isinstance(expected_sha, str) or not isinstance(expected_size, int):
+            if (
+                not isinstance(url, str)
+                or not isinstance(expected_sha, str)
+                or not isinstance(expected_size, int)
+            ):
                 fail(f"baseline asset {asset_key} is incomplete")
             archive_bytes = read_url(url, max_bytes=DOWNLOAD_MAX_BYTES, expected_size=expected_size)
             if sha256_bytes(archive_bytes) != expected_sha:
                 fail(f"downloaded MiMo Code digest mismatch for {asset_key}")
-            archive_member_path, archive_member_mode, verified_binary = extract_verified_binary(archive_bytes, str(name))
+            archive_member_path, archive_member_mode, verified_binary = extract_verified_binary(
+                archive_bytes, str(name)
+            )
             executable_baseline = asset.get("executable")
             if executable_baseline is not None:
                 expected_executable = {
@@ -4636,7 +6115,9 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
                 if executable_baseline != expected_executable:
                     fail(f"downloaded MiMo Code executable metadata mismatch for {asset_key}")
             installer, installer_sha, installer_source, installer_size = read_pinned_installer()
-            artifact = run_official_installer(installer, installer_source, installer_sha, verified_binary)
+            artifact = run_official_installer(
+                installer, installer_source, installer_sha, verified_binary
+            )
             manifest = {
                 "schema_version": 2,
                 "version": TESTED_VERSION,
@@ -4660,7 +6141,10 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
                 "version_output": artifact["version_output"],
             }
             desired_software = {
-                SOFTWARE_VERSION_RELATIVE / COMMAND_NAME: (artifact["binary"], OWNER_EXECUTABLE_MODE),
+                SOFTWARE_VERSION_RELATIVE / COMMAND_NAME: (
+                    artifact["binary"],
+                    OWNER_EXECUTABLE_MODE,
+                ),
                 Path("bin") / COMMAND_NAME: (artifact["binary"], OWNER_EXECUTABLE_MODE),
                 SOFTWARE_MANIFEST_RELATIVE: (canonical_json(manifest), OWNER_FILE_MODE),
             }
@@ -4675,21 +6159,34 @@ def install_or_update_cli(target: Path, *, operation: str) -> dict[str, Any]:
             final = software_status(canonical_target, include_cleanup=False)
             if not final["installed"] or not final["current"]:
                 fail("MiMo Code software install did not produce current target-owned software")
-            verify_software_state(canonical_target, desired_software, "software install postcondition")
+            verify_software_state(
+                canonical_target, desired_software, "software install postcondition"
+            )
             cleanup_pending = commit_postcondition_cleanup(
                 canonical_target,
                 [(software_undo.undo_root, "software rollback preserve state")],
+                precommit_intents=[software_undo.intent],
             )
             software_undo = None
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if software_undo is not None:
                 software_undo.rollback()
             elif before_software is not None:
                 restore_software_snapshot(canonical_target, before_software)
-            remove_empty_directory_if_created(software_tree_binary(canonical_target).parent, before_version_dir)
-            remove_empty_directory_if_created(software_tree_binary(canonical_target).parent.parent, before_versions_dir)
-            remove_empty_directory_if_created(software_manifest_path(canonical_target).parent, before_software_dir)
-            remove_empty_directory_if_created(mimo_executable(canonical_target).parent, before_bin_dir)
+            remove_empty_directory_if_created(
+                software_tree_binary(canonical_target).parent, before_version_dir
+            )
+            remove_empty_directory_if_created(
+                software_tree_binary(canonical_target).parent.parent, before_versions_dir
+            )
+            remove_empty_directory_if_created(
+                software_manifest_path(canonical_target).parent, before_software_dir
+            )
+            remove_empty_directory_if_created(
+                mimo_executable(canonical_target).parent, before_bin_dir
+            )
             rollback_created_target_if_absent(
                 canonical_target,
                 target_existed_before,
@@ -4736,13 +6233,18 @@ def remove_cli(target: Path) -> dict[str, Any]:
             final = software_status(canonical_target, include_cleanup=False)
             if final["present"]:
                 fail("MiMo Code software remove left target-owned files")
-            directory_undo = DirectoryUndoTransaction(canonical_target, label="software remove")
-            for relative in (
+            software_directory_relatives = (
                 software_tree_binary(canonical_target).parent.relative_to(canonical_target),
                 software_tree_binary(canonical_target).parent.parent.relative_to(canonical_target),
                 software_manifest_path(canonical_target).parent.relative_to(canonical_target),
                 mimo_executable(canonical_target).parent.relative_to(canonical_target),
-            ):
+            )
+            directory_undo = DirectoryUndoTransaction(
+                canonical_target,
+                label="software remove",
+                planned_relatives=software_directory_relatives,
+            )
+            for relative in software_directory_relatives:
                 directory_undo.hold_empty(relative)
             final_after_dirs = software_status(canonical_target, include_cleanup=False)
             if final_after_dirs["present"]:
@@ -4753,11 +6255,17 @@ def remove_cli(target: Path) -> dict[str, Any]:
                     (directory_undo.undo_root, "software directory rollback preserve state"),
                     (software_undo.undo_root, "software rollback preserve state"),
                 ],
+                precommit_intents=[
+                    *directory_undo.intents,
+                    software_undo.intent,
+                ],
             )
             directory_undo = None
             software_undo = None
             committed = True
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, CommittedLifecycleError):
+                raise
             if directory_undo is not None and not committed:
                 directory_undo.rollback()
             if software_undo is not None and not committed:
@@ -4883,7 +6391,12 @@ def protect_directory(path: Path, label: str) -> tuple[Path, int] | None:
 @contextlib.contextmanager
 def protected_launch_artifacts(target: Path) -> Iterator[None]:
     protected: list[tuple[Path, int]] = []
-    for relative in (Path("bin"), Path("software"), Path("software") / "versions", SOFTWARE_VERSION_RELATIVE):
+    for relative in (
+        Path("bin"),
+        Path("software"),
+        Path("software") / "versions",
+        SOFTWARE_VERSION_RELATIVE,
+    ):
         item = protect_directory(target / relative, str(relative))
         if item is not None:
             protected.append(item)
@@ -4902,8 +6415,12 @@ def verify_executable_for_launch(target: Path) -> None:
     if not status["installed"] or not status["current"]:
         fail("MiMo Code is not installed at the tested version in this target")
     executable = mimo_executable(target)
-    manifest = load_json_object(software_manifest_path(target), "software manifest", owner_only=True)
-    binary, _info = read_regular_file(executable, "MiMo Code executable", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES)
+    manifest = load_json_object(
+        software_manifest_path(target), "software manifest", owner_only=True
+    )
+    binary, _info = read_regular_file(
+        executable, "MiMo Code executable", max_bytes=SOFTWARE_EXECUTABLE_MAX_BYTES
+    )
     if manifest.get("binary_sha256") != sha256_bytes(binary):
         fail_concurrent("MiMo Code executable changed before launch")
 
@@ -4917,7 +6434,9 @@ def launch_mimo(target: Path, args: list[str]) -> int:
         if state["state"] != "managed":
             fail("target is not managed by nddev-mimocode-app")
         if state.get("cleanup_pending"):
-            fail("target has pending post-commit cleanup; run a mutating lifecycle command to drain it before launch")
+            fail(
+                "target has pending post-commit cleanup; run a mutating lifecycle command to drain it before launch"
+            )
         validate_launch_project_boundary(canonical_target)
         validate_launch_managed_config_boundary(canonical_target)
         require_supported_product_host()
@@ -4957,7 +6476,9 @@ def add_setup_profile_arguments(parser: argparse.ArgumentParser) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = JsonBoundaryArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=JsonBoundaryArgumentParser)
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, parser_class=JsonBoundaryArgumentParser
+    )
     list_parser = subparsers.add_parser("list", help="list setup and profile variants")
     add_json_argument(list_parser)
     for name in ("status", "software-status"):
@@ -5011,11 +6532,21 @@ def run(args: argparse.Namespace) -> int:
     if args.command in TARGET_BOUND_COMMANDS:
         require_supported_product_host()
     if args.command == "list":
-        print_payload({"ok": True, "setups": list_setups(), "profiles": list_profiles(), "default_profile": DEFAULT_PROFILE_ID}, json_output=args.json)
+        print_payload(
+            {
+                "ok": True,
+                "setups": list_setups(),
+                "profiles": list_profiles(),
+                "default_profile": DEFAULT_PROFILE_ID,
+            },
+            json_output=args.json,
+        )
         return 0
     if args.command == "status":
         target = require_absolute_target_argument(args.target)
-        payload = run_locked_inspection(target, lambda canonical_target: {"ok": True, **inspect_target(canonical_target)})
+        payload = run_locked_inspection(
+            target, lambda canonical_target: {"ok": True, **inspect_target(canonical_target)}
+        )
         print_payload(payload, json_output=args.json)
         return 0
     if args.command == "software-status":
@@ -5029,7 +6560,9 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command in {"install", "switch"}:
         target = require_absolute_target_argument(args.target)
-        print_payload(mutate_setup(target, args.setup, args.profile, args.command), json_output=args.json)
+        print_payload(
+            mutate_setup(target, args.setup, args.profile, args.command), json_output=args.json
+        )
         return 0
     if args.command == "update":
         target = require_absolute_target_argument(args.target)
