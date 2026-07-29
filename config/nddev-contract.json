@@ -158,7 +158,7 @@
       "mutating_target_commands": true,
       "read_only_status_plan_software_status": "cold no-anchor reads create no anchors; seeded reads use existing global.lock and existing target marker when present; absent targets do not create target-specific external markers"
     },
-    "read_only_cold_exception": "cold no-anchor read is the only target-observation exception before external coordination; it double-checks product anchor absence and retries under the anchor if a concurrent mutation publishes one",
+    "read_only_cold_exception": "cold zero-anchor read is the only target-observation exception before external coordination; it inspects the existing bootstrap product directory without creating or repairing, fails closed on product-absent canonical target anchors or publication aliases, and retries/fails closed if product or target anchor state changes during the read",
     "published_anchor_rollback_exception": "complete validated product and canonical target anchors are monotonic rendezvous objects after the final-path publication commit point and are never unlinked by ordinary lifecycle cleanup or rollback",
     "hardlink_publication_alias_recovery": "mutating openers lock the final anchor before parent mutation, remove exactly one bounded same-dev-inode machine-named publication alias, fsync the parent, and revalidate final path binding with nlink=1; read-only shared openers fail closed without recovery when nlink is not 1 or a publication alias is present; unknown or multiple hardlinks fail closed",
     "internal_lock_persistent": "mutating commands only; read-only inspection commands do not create target-internal lock graph",
@@ -192,6 +192,15 @@
     "rollback_on_failure": true,
     "rollback_exact_object_graph": "path presence, kind, directory/file topology, bytes, sizes, modes, inode identity, and modification times for in-scope target, control, lock, backup, and software paths",
     "rollback_strategy": "rename-held undo material preserved until lifecycle postconditions pass and immutable postcommit cleanup journal reaches final-path no-replace publication",
+    "precommit_recovery_intent": "complete durable authority under .nddev-mimocode-recovery/NDDEV-MIMOCODE-RECOVERY.<pid>.<time>.json is published before every visible rollback, stage, recovery, backup, software, or cleanup source move; it binds canonical target, fixed recovery parent, bounded relative source/stash/generated paths, created directory candidates, and exact object graph records",
+    "precommit_recovery_publish_order": [
+      "complete intent file-fsync",
+      "atomic no-replace final-path publication",
+      "recovery parent-fsync",
+      "visible source move"
+    ],
+    "precommit_recovery_read_only": "read-only commands fail closed without recovery when pre-commit recovery state or publication aliases are present; mutating commands recover exact same-inode aliases and restore-or-complete only under exclusive target coordination",
+    "precommit_recovery_intent_max_bytes": 4194304,
     "postcommit_cleanup_journal": "immutable complete no-replace journal at .nddev-mimocode-cleanup/NDDEV-MIMOCODE-CLEANUP.json; it binds canonical target, fixed cleanup parent, bounded relative tombstones, kind, uid, mode, nlink, dev+ino, size, mtime, and tree digests; read-only commands validate and report only, while mutating commands recover one exact publication alias and drain before active changes",
     "postcommit_cleanup_journal_max_bytes": 4194304,
     "postcommit_cleanup_publish_order": [

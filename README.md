@@ -74,6 +74,12 @@ state; they never repair or drain it. The next mutating target-bound command
 drains a valid journal before active changes, and malformed cleanup state fails
 closed with exit code 2.
 
+Before any visible preserve/stage move, mutating lifecycle commands publish a
+bounded recovery intent so a later exclusive mutator can restore or complete the
+interrupted operation after process death. Read-only commands never repair that
+state; they fail closed and leave the namespace unchanged. Exact policy values
+are owned by `config/nddev-contract.json` and `cli-tools/nddev_mimocode.py`.
+
 Target-owned software lifecycle:
 
 ```bash
