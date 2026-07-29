@@ -47,6 +47,7 @@ PRIVATE_PATH_MARKERS = {
     "validation",
 }
 PRIVATE_TEXT_MARKERS = ("validation/" + "nddev-mimocode-app", ".ser" + "ena")
+SHARED_WORKFLOW_PIN = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
 
 
 def require(condition: bool, message: str, errors: list[str]) -> None:
@@ -253,12 +254,61 @@ def validate_builder_projection(errors: list[str]) -> None:
             require(path.stat().st_size > 0, f"empty builder artifact: {relative}", errors)
 
 
+def validate_release_workflows_and_runtime_integrity(errors: list[str]) -> None:
+    workflows = {
+        "actionlint.yml", "codeql.yml", "dependency-review.yml", "release.yml",
+        "scorecard.yml", "secret-scan.yml", "zizmor.yml",
+    }
+    for name in workflows:
+        path = ROOT / ".github/workflows" / name
+        require(path.is_file() and not path.is_symlink(), f"missing workflow: {name}", errors)
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if name != "release.yml":
+            require(SHARED_WORKFLOW_PIN in text, f"{name}: shared workflow pin mismatch", errors)
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    for fragment in (
+        "permissions: {}",
+        'tags:\n      - "[0-9]+.[0-9]+.[0-9]+"',
+        f"release-supply-chain.yml@{SHARED_WORKFLOW_PIN}",
+        "version: ${{ github.ref_name }}",
+        "package_name: nddev-mimocode-app",
+        "archive_paths:",
+        "runtime_paths:",
+    ):
+        require(fragment in release, f"release workflow omits {fragment}", errors)
+    required_roots = {
+        "AGENTS.md", ".claude/CLAUDE.md", "README.md", "LICENSE", "VERSION",
+        "build", "cli-tools", "config", "plugins", "profiles", "references", "setups",
+    }
+    require(
+        required_roots.issubset(set(release.split())),
+        "release archive/runtime membership is incomplete",
+        errors,
+    )
+    manager = (ROOT / "cli-tools/nddev_mimocode.py").read_text(encoding="utf-8")
+    for fragment in (
+        "detect_platform_selection",
+        "O_NOFOLLOW",
+        "cleanup_pending",
+        "MIMOCODE_DISABLE_PROJECT_CONFIG",
+        "MIMOCODE_DISABLE_EXTERNAL_SKILLS",
+        "MIMOCODE_DISABLE_AUTOUPDATE",
+        "validate_launch_managed_config_boundary",
+        "validate_launch_project_boundary",
+    ):
+        require(fragment in manager, f"manager runtime-integrity fragment missing: {fragment}", errors)
+    require("marketplace.json" not in manager, "manager must not synthesize a marketplace", errors)
+
+
 def main() -> int:
     errors: list[str] = []
     validate_public_boundary(errors)
     validate_versions(errors)
     validate_catalog(errors)
     validate_builder_projection(errors)
+    validate_release_workflows_and_runtime_integrity(errors)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
