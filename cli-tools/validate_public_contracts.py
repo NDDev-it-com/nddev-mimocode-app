@@ -96,6 +96,23 @@ def validate_public_boundary(errors: list[str]) -> None:
             require(marker not in content, f"{relative}: private text marker {marker!r}", errors)
 
 
+def validate_claude_bridge(errors: list[str]) -> None:
+    directory = ROOT / ".claude"
+    bridge = directory / "CLAUDE.md"
+    agents = ROOT / "AGENTS.md"
+    require(directory.is_dir() and not directory.is_symlink(), ".claude must be a real directory", errors)
+    if directory.is_dir() and not directory.is_symlink():
+        require(
+            sorted(path.name for path in directory.iterdir()) == ["CLAUDE.md"],
+            ".claude must contain exactly CLAUDE.md",
+            errors,
+        )
+    require(bridge.is_file() and not bridge.is_symlink(), ".claude/CLAUDE.md must be a regular file", errors)
+    require(agents.is_file() and not agents.is_symlink(), "AGENTS.md must be a regular file", errors)
+    if bridge.is_file() and not bridge.is_symlink():
+        require(bridge.read_bytes() == b"@../AGENTS.md\n", ".claude/CLAUDE.md bytes mismatch", errors)
+
+
 def validate_versions(errors: list[str]) -> None:
     version_text = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     build = read_json("build/version.json", errors)
@@ -305,6 +322,7 @@ def validate_release_workflows_and_runtime_integrity(errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     validate_public_boundary(errors)
+    validate_claude_bridge(errors)
     validate_versions(errors)
     validate_catalog(errors)
     validate_builder_projection(errors)
