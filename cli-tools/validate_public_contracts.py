@@ -138,6 +138,11 @@ def validate_versions(errors: list[str]) -> None:
     assert contract is not None
     assert baseline is not None
 
+    require(
+        "captured_at" not in baseline,
+        "baseline currentness observation must remain private",
+        errors,
+    )
     require(SEMVER.fullmatch(version_text) is not None, "VERSION: invalid semantic version", errors)
     require(build.get("build_version") == version_text, "build version mismatch", errors)
     require(manifest.get("build_version") == version_text, "manifest version mismatch", errors)
