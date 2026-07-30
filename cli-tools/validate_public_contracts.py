@@ -46,7 +46,11 @@ PRIVATE_PATH_MARKERS = {
     "tests",
     "validation",
 }
-PRIVATE_TEXT_MARKERS = ("validation/" + "nddev-mimocode-app", ".ser" + "ena")
+PRIVATE_TEXT_MARKERS = (
+    "validation/" + "nddev-mimocode-app",
+    "nddev-" + "harnesses",
+    ".ser" + "ena",
+)
 SHARED_WORKFLOW_PIN = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
 
 

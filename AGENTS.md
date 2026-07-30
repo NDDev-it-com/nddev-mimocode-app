@@ -10,5 +10,5 @@ Use the manager and public contract as the source of truth for lifecycle,
 profiles, locks, target layout, software pinning, and validation behavior.
 Use the baseline ledger for volatile upstream release and native-surface facts.
 
-Do not edit root nddev-harnesses, validation slices, registry metadata, other
+Do not edit maintainer-owned private validation, registry metadata, other
 modules, CI state, tags, or live MiMo Code configuration from this module.
