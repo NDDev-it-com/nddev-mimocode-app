@@ -310,31 +310,6 @@ PROJECT_BOUNDARY_PATHS = (
     Path(".codex") / "skills",
     Path(".opencode") / "skills",
 )
-OBSERVED_UPLOADED_RUNTIME_ASSET_IDS = (
-    "darwin-arm64",
-    "darwin-x64-baseline",
-    "darwin-x64",
-    "linux-arm64-musl",
-    "linux-arm64",
-    "linux-x64-baseline-musl",
-    "linux-x64-baseline",
-    "linux-x64-musl",
-    "linux-x64",
-    "windows-arm64",
-    "windows-x64-baseline",
-    "windows-x64",
-)
-RELEASE_PAGE_ASSET_COUNT = 14
-GENERATED_SOURCE_DOWNLOADS = (
-    {
-        "name": "Source code (zip)",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.zip",
-    },
-    {
-        "name": "Source code (tar.gz)",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/archive/refs/tags/v0.1.9.tar.gz",
-    },
-)
 SUPPORTED_PRODUCT_HOST_IDS = (
     "macos-arm64",
     "macos-x64",

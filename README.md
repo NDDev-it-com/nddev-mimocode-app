@@ -12,10 +12,8 @@ product hosts `macos-arm64`, `macos-x64`, `ubuntu-glibc-arm64`, and
 `ubuntu-glibc-x64`. Linux hosts must report structured `/etc/os-release`
 `ID=ubuntu` and glibc; non-Ubuntu Linux, musl Linux, Windows, and unsupported
 architectures fail before network, staging, or runtime. No official Ubuntu
-version floor is published or claimed. The baseline preserves all 12 official
-v0.1.9 uploaded runtime archive names and digests, plus the two generated
-source downloads reported by the GitHub release page, as vendor observation
-separate from the supported subset.
+version floor is published or claimed. The public baseline preserves only the
+official artifacts selected for supported product hosts.
 For every target-bound command the supported-host preflight runs before target
 filesystem inspection; only lexical absolute-target validation precedes
 external lifecycle coordination, except for the documented cold read-only

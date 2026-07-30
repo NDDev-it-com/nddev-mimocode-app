@@ -37,6 +37,14 @@ FULL_LIFECYCLE = [
 ]
 SUPPORTED_HOSTS = ["macos-arm64", "macos-x64", "ubuntu-glibc-arm64", "ubuntu-glibc-x64"]
 REJECTED_HOSTS = ["windows", "non-ubuntu-linux", "linux-musl", "unsupported-architecture"]
+SUPPORTED_ASSET_IDS = [
+    "darwin-arm64",
+    "darwin-x64-baseline",
+    "darwin-x64",
+    "linux-arm64",
+    "linux-x64-baseline",
+    "linux-x64",
+]
 PRIVATE_PATH_MARKERS = {
     ".pytest_cache",
     ".ruff_cache",
@@ -240,11 +248,27 @@ def validate_catalog(errors: list[str]) -> None:
     )
     require(hosts.get("supported_ids") == SUPPORTED_HOSTS, "baseline host ids mismatch", errors)
     assets = baseline.get("release", {}).get("assets", {})
+    selection = software.get("product_host_asset_selection", {})
+    selected_asset_ids: list[str] = []
+    if isinstance(selection, dict):
+        selected_asset_ids = sorted(
+            asset_id
+            for choices in selection.values()
+            if isinstance(choices, dict)
+            for asset_id in choices.values()
+            if isinstance(asset_id, str)
+        )
     require(
-        sorted(assets) == sorted(software.get("observed_uploaded_runtime_asset_ids", [])),
-        "runtime asset inventory mismatch",
+        selected_asset_ids == sorted(SUPPORTED_ASSET_IDS),
+        "supported product host asset selection mismatch",
         errors,
     )
+    require(
+        hosts.get("product_host_asset_selection") == selection,
+        "baseline product host asset selection mismatch",
+        errors,
+    )
+    require(sorted(assets) == sorted(SUPPORTED_ASSET_IDS), "runtime asset inventory mismatch", errors)
     for asset_id, asset in assets.items():
         require(isinstance(asset, dict), f"asset {asset_id}: record must be an object", errors)
         if not isinstance(asset, dict):

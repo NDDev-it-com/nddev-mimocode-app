@@ -4,7 +4,6 @@
   "python_requires": ">=3.9",
   "mimocode_tested": "0.1.9",
   "mimocode_release_tag": "v0.1.9",
-  "mimocode_published_at": "2026-07-24T06:06:13Z",
   "command": "mimo",
   "official_repository": "XiaomiMiMo/MiMo-Code",
   "official_installer": "https://mimo.xiaomi.com/install",
