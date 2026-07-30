@@ -2546,9 +2546,7 @@ def validate_bootstrap_lock_binding(
         fail("bootstrap lifecycle lock file is bound to a different canonical target")
 
 
-def read_bootstrap_anchor_bytes_no_create(
-    path: Path, label: str
-) -> tuple[bytes, os.stat_result]:
+def read_bootstrap_anchor_bytes_no_create(path: Path, label: str) -> tuple[bytes, os.stat_result]:
     try:
         before = path.lstat()
     except FileNotFoundError:
@@ -2627,9 +2625,7 @@ def observe_bootstrap_target_anchor_no_create(
             fail("bootstrap lifecycle lock file has an unsafe publication alias")
 
     try:
-        content, info = read_bootstrap_anchor_bytes_no_create(
-            path, "bootstrap lifecycle lock file"
-        )
+        content, info = read_bootstrap_anchor_bytes_no_create(path, "bootstrap lifecycle lock file")
     except FileNotFoundError:
         if alias_records:
             fail("bootstrap lifecycle lock publication alias is missing its final anchor")
@@ -2658,7 +2654,9 @@ def observe_bootstrap_target_anchor_no_create(
     )
 
 
-def require_no_cold_bootstrap_target_anchor(canonical_target: Path, target_key: str) -> tuple[Any, ...]:
+def require_no_cold_bootstrap_target_anchor(
+    canonical_target: Path, target_key: str
+) -> tuple[Any, ...]:
     observation = observe_bootstrap_target_anchor_no_create(canonical_target, target_key)
     if observation[0] == "present-anchor":
         fail("bootstrap product anchor is missing while the canonical target anchor exists")

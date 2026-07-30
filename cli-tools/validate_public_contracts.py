@@ -112,17 +112,29 @@ def validate_claude_bridge(errors: list[str]) -> None:
     directory = ROOT / ".claude"
     bridge = directory / "CLAUDE.md"
     agents = ROOT / "AGENTS.md"
-    require(directory.is_dir() and not directory.is_symlink(), ".claude must be a real directory", errors)
+    require(
+        directory.is_dir() and not directory.is_symlink(),
+        ".claude must be a real directory",
+        errors,
+    )
     if directory.is_dir() and not directory.is_symlink():
         require(
             sorted(path.name for path in directory.iterdir()) == ["CLAUDE.md"],
             ".claude must contain exactly CLAUDE.md",
             errors,
         )
-    require(bridge.is_file() and not bridge.is_symlink(), ".claude/CLAUDE.md must be a regular file", errors)
-    require(agents.is_file() and not agents.is_symlink(), "AGENTS.md must be a regular file", errors)
+    require(
+        bridge.is_file() and not bridge.is_symlink(),
+        ".claude/CLAUDE.md must be a regular file",
+        errors,
+    )
+    require(
+        agents.is_file() and not agents.is_symlink(), "AGENTS.md must be a regular file", errors
+    )
     if bridge.is_file() and not bridge.is_symlink():
-        require(bridge.read_bytes() == b"@../AGENTS.md\n", ".claude/CLAUDE.md bytes mismatch", errors)
+        require(
+            bridge.read_bytes() == b"@../AGENTS.md\n", ".claude/CLAUDE.md bytes mismatch", errors
+        )
 
 
 def validate_versions(errors: list[str]) -> None:
@@ -273,7 +285,9 @@ def validate_catalog(errors: list[str]) -> None:
         "baseline product host asset selection mismatch",
         errors,
     )
-    require(sorted(assets) == sorted(SUPPORTED_ASSET_IDS), "runtime asset inventory mismatch", errors)
+    require(
+        sorted(assets) == sorted(SUPPORTED_ASSET_IDS), "runtime asset inventory mismatch", errors
+    )
     for asset_id, asset in assets.items():
         require(isinstance(asset, dict), f"asset {asset_id}: record must be an object", errors)
         if not isinstance(asset, dict):
@@ -306,8 +320,13 @@ def validate_builder_projection(errors: list[str]) -> None:
 
 def validate_release_workflows_and_runtime_integrity(errors: list[str]) -> None:
     workflows = {
-        "actionlint.yml", "codeql.yml", "dependency-review.yml", "release.yml",
-        "scorecard.yml", "secret-scan.yml", "zizmor.yml",
+        "actionlint.yml",
+        "codeql.yml",
+        "dependency-review.yml",
+        "release.yml",
+        "scorecard.yml",
+        "secret-scan.yml",
+        "zizmor.yml",
     }
     for name in workflows:
         path = ROOT / ".github/workflows" / name
@@ -329,8 +348,18 @@ def validate_release_workflows_and_runtime_integrity(errors: list[str]) -> None:
     ):
         require(fragment in release, f"release workflow omits {fragment}", errors)
     required_roots = {
-        "AGENTS.md", ".claude/CLAUDE.md", "README.md", "LICENSE", "VERSION",
-        "build", "cli-tools", "config", "plugins", "profiles", "references", "setups",
+        "AGENTS.md",
+        ".claude/CLAUDE.md",
+        "README.md",
+        "LICENSE",
+        "VERSION",
+        "build",
+        "cli-tools",
+        "config",
+        "plugins",
+        "profiles",
+        "references",
+        "setups",
     }
     require(
         required_roots.issubset(set(release.split())),
@@ -348,7 +377,9 @@ def validate_release_workflows_and_runtime_integrity(errors: list[str]) -> None:
         "validate_launch_managed_config_boundary",
         "validate_launch_project_boundary",
     ):
-        require(fragment in manager, f"manager runtime-integrity fragment missing: {fragment}", errors)
+        require(
+            fragment in manager, f"manager runtime-integrity fragment missing: {fragment}", errors
+        )
     require("marketplace.json" not in manager, "manager must not synthesize a marketplace", errors)
 
 
