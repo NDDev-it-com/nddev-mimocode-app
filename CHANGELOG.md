@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## [0.2.0]
 
 - Replace setup variants with the `nddev-builder` content setup and
   orthogonal `full-auto` and `safe` profiles.
