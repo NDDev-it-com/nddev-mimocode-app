@@ -5586,7 +5586,14 @@ def software_status(target: Path, *, include_cleanup: bool = True) -> dict[str, 
         drift.append("asset_sha256")
     if info.get("asset_size") != expected_size:
         drift.append("asset_size")
+    # The extracted-binary identity is the only check that survives an attacker
+    # who rewrites the manifest, because the manifest sits beside the binary and
+    # is equally writable. A baseline that omits it therefore cannot answer
+    # "is this the software we installed" at all -- so say so instead of
+    # skipping the check and still reporting current.
     executable_baseline = asset.get("executable")
+    if not isinstance(executable_baseline, dict):
+        drift.append("baseline_executable_unavailable")
     if isinstance(executable_baseline, dict):
         for key in (
             "archive_member_path",
