@@ -42,31 +42,66 @@
         "name": "mimocode-darwin-x64-baseline.zip",
         "size": 34781456,
         "sha256": "fdf326bf8d8d9b4a5e524e0d15f17e8f894b0d0d278287d0c20de646f52184b1",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64-baseline.zip"
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64-baseline.zip",
+        "executable": {
+          "path": "mimo",
+          "archive_mode": "0755",
+          "installer_mode": "0755",
+          "size": 100073552,
+          "sha256": "79fa04fc6164749cef7b0f4425f0d94a5b6cd6c4bbf135e7726861aacdd9d51e"
+        }
       },
       "darwin-x64": {
         "name": "mimocode-darwin-x64.zip",
         "size": 34787169,
         "sha256": "710618322abeb01a2b1130c6099fe7ff68b3efc4da19545817926b22afcc5f10",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64.zip"
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64.zip",
+        "executable": {
+          "path": "mimo",
+          "archive_mode": "0755",
+          "installer_mode": "0755",
+          "size": 100089936,
+          "sha256": "3b7b81232022f3cae11412b1585c0d1a3dabcb5759b80930db58950294560f72"
+        }
       },
       "linux-arm64": {
         "name": "mimocode-linux-arm64.tar.gz",
         "size": 44914006,
         "sha256": "801bb33a18c66bfffaf342735780bb2635f419044003550d0e167eaf776e0db0",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-arm64.tar.gz"
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-arm64.tar.gz",
+        "executable": {
+          "path": "mimo",
+          "archive_mode": "0755",
+          "installer_mode": "0755",
+          "size": 128428176,
+          "sha256": "9ca2a45431e8de02a892c9605c40c90ced8218ab453ac21c0d07082eeef5d5b3"
+        }
       },
       "linux-x64-baseline": {
         "name": "mimocode-linux-x64-baseline.tar.gz",
         "size": 44875105,
         "sha256": "104b736967db1772ccc12648c6b2b7e8bf05862794f254c70a23d950d5278081",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64-baseline.tar.gz"
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64-baseline.tar.gz",
+        "executable": {
+          "path": "mimo",
+          "archive_mode": "0755",
+          "installer_mode": "0755",
+          "size": 128411776,
+          "sha256": "a79f78293cadc5a9340f483faf73931ca314675a62c268b56b460942e3de8131"
+        }
       },
       "linux-x64": {
         "name": "mimocode-linux-x64.tar.gz",
         "size": 45247960,
         "sha256": "99ade0a26235d80db7bb6ac0319b0f6508dfe684e2cfab7a00801ad6aa2ac673",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64.tar.gz"
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64.tar.gz",
+        "executable": {
+          "path": "mimo",
+          "archive_mode": "0755",
+          "installer_mode": "0755",
+          "size": 129366144,
+          "sha256": "28072712719bc0aa1cae9f855edb1d0301e257736181179b2c8bcf851d483b5c"
+        }
       }
     }
   },
