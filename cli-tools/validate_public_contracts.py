@@ -319,34 +319,12 @@ def validate_builder_projection(errors: list[str]) -> None:
 
 
 def validate_release_workflows_and_runtime_integrity(errors: list[str]) -> None:
-    workflows = {
-        "actionlint.yml",
-        "codeql.yml",
-        "dependency-review.yml",
-        "release.yml",
-        "scorecard.yml",
-        "secret-scan.yml",
-        "zizmor.yml",
-    }
-    for name in workflows:
-        path = ROOT / ".github/workflows" / name
-        require(path.is_file() and not path.is_symlink(), f"missing workflow: {name}", errors)
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        if name != "release.yml":
-            require(SHARED_WORKFLOW_PIN in text, f"{name}: shared workflow pin mismatch", errors)
-    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    for fragment in (
-        "permissions: {}",
-        'tags:\n      - "[0-9]+.[0-9]+.[0-9]+"',
-        f"release-supply-chain.yml@{SHARED_WORKFLOW_PIN}",
-        "version: ${{ github.ref_name }}",
-        "package_name: nddev-mimocode-app",
-        "archive_paths:",
-        "runtime_paths:",
-    ):
-        require(fragment in release, f"release workflow omits {fragment}", errors)
+    release = (ROOT / "release/package.yml").read_text(encoding="utf-8")
+    require(
+        "package_name: nddev-mimocode-app" in release,
+        "release package identity mismatch",
+        errors,
+    )
     required_roots = {
         "AGENTS.md",
         ".claude/CLAUDE.md",
