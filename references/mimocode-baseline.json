@@ -9,98 +9,98 @@
     "script_binary_mode_semantics": "When --binary is supplied, the official installer skips platform detection and download logic, copies the already supplied binary to $HOME/.mimocode/bin/mimo, chmods it 0755, and honors --no-modify-path.",
     "flags": [
       "--version",
-      "0.1.9",
+      "0.1.10",
       "--no-modify-path",
       "--binary",
       "<verified-binary>"
     ],
     "fds_latest_url": "https://mimocode.cnbj1.mi-fds.com/mimocode/mimocode/releases/latest",
-    "fds_latest": "0.1.9",
+    "fds_latest": "0.1.10",
     "module_install_mechanism": "verified-official-release-asset-with-verified-official-binary-installer",
     "package_manager_install": null
   },
   "release": {
     "repository": "XiaomiMiMo/MiMo-Code",
-    "tag": "v0.1.9",
-    "version": "0.1.9",
-    "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
+    "tag": "v0.1.10",
+    "version": "0.1.10",
+    "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.10",
     "assets": {
       "darwin-arm64": {
         "name": "mimocode-darwin-arm64.zip",
-        "size": 32411159,
-        "sha256": "a46f1fc7f2a770d84ff5a3a731bc86ec54a3aa40ce22efd71e3c114f2b42ef83",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-arm64.zip",
+        "size": 32491600,
+        "sha256": "5e490be72c828697bf3615031a4933a524f80aab45094797c7eedb181c57d83e",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.10/mimocode-darwin-arm64.zip",
         "executable": {
           "path": "mimo",
           "archive_mode": "0755",
           "installer_mode": "0755",
-          "size": 94571234,
-          "sha256": "faf477a3e0ec0ec1bef1b2fb692c2d9fdbba9a5864590deaa23e26b5694cb65f"
+          "size": 94917986,
+          "sha256": "377b7345e74ef4db5974e9165731d7516f16eae0e19b02772b93110b178f11c0"
         }
       },
       "darwin-x64-baseline": {
         "name": "mimocode-darwin-x64-baseline.zip",
-        "size": 34781456,
-        "sha256": "fdf326bf8d8d9b4a5e524e0d15f17e8f894b0d0d278287d0c20de646f52184b1",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64-baseline.zip",
+        "size": 34865019,
+        "sha256": "8e645757d1c388cb8fee04e666ad0d1022d7c75d427151909b980fc1c6636fdd",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.10/mimocode-darwin-x64-baseline.zip",
         "executable": {
           "path": "mimo",
           "archive_mode": "0755",
           "installer_mode": "0755",
-          "size": 100073552,
-          "sha256": "79fa04fc6164749cef7b0f4425f0d94a5b6cd6c4bbf135e7726861aacdd9d51e"
+          "size": 100434000,
+          "sha256": "27771678d7037d8b43f7ba8c5ece6a9053b29c9262816869a0bee5e528c1e69a"
         }
       },
       "darwin-x64": {
         "name": "mimocode-darwin-x64.zip",
-        "size": 34787169,
-        "sha256": "710618322abeb01a2b1130c6099fe7ff68b3efc4da19545817926b22afcc5f10",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-darwin-x64.zip",
+        "size": 34863608,
+        "sha256": "933ee1dae1d08618ee86da7ed74b5e58fbea43a145571364d83a1997a302f867",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.10/mimocode-darwin-x64.zip",
         "executable": {
           "path": "mimo",
           "archive_mode": "0755",
           "installer_mode": "0755",
-          "size": 100089936,
-          "sha256": "3b7b81232022f3cae11412b1585c0d1a3dabcb5759b80930db58950294560f72"
+          "size": 100434000,
+          "sha256": "909f7d303223b7d2d79947ffd597ef920a02d063228caf7212dbbda7678d294c"
         }
       },
       "linux-arm64": {
         "name": "mimocode-linux-arm64.tar.gz",
-        "size": 44914006,
-        "sha256": "801bb33a18c66bfffaf342735780bb2635f419044003550d0e167eaf776e0db0",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-arm64.tar.gz",
+        "size": 44994401,
+        "sha256": "c7a0b3175ae7231e82a1e2aacfb81137c84ecacbcb00ea9a960a7208f3fdecfb",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.10/mimocode-linux-arm64.tar.gz",
         "executable": {
           "path": "mimo",
           "archive_mode": "0755",
           "installer_mode": "0755",
-          "size": 128428176,
-          "sha256": "9ca2a45431e8de02a892c9605c40c90ced8218ab453ac21c0d07082eeef5d5b3"
+          "size": 128755856,
+          "sha256": "8e6563d51e17b287c0d2f1589989445443908920d77d6cb364d0ffb21c294d21"
         }
       },
       "linux-x64-baseline": {
         "name": "mimocode-linux-x64-baseline.tar.gz",
-        "size": 44875105,
-        "sha256": "104b736967db1772ccc12648c6b2b7e8bf05862794f254c70a23d950d5278081",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64-baseline.tar.gz",
+        "size": 44955989,
+        "sha256": "c170085c05c38883283dfbe4606b66d00001079cfc4f2b06f25f48cac8570580",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.10/mimocode-linux-x64-baseline.tar.gz",
         "executable": {
           "path": "mimo",
           "archive_mode": "0755",
           "installer_mode": "0755",
-          "size": 128411776,
-          "sha256": "a79f78293cadc5a9340f483faf73931ca314675a62c268b56b460942e3de8131"
+          "size": 128768128,
+          "sha256": "476506e60b8984d6f6b6627365ebcad1199b851c3c855d185d3c124e6459db81"
         }
       },
       "linux-x64": {
         "name": "mimocode-linux-x64.tar.gz",
-        "size": 45247960,
-        "sha256": "99ade0a26235d80db7bb6ac0319b0f6508dfe684e2cfab7a00801ad6aa2ac673",
-        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.9/mimocode-linux-x64.tar.gz",
+        "size": 45328987,
+        "sha256": "f8fbdd6b3352c8cea02d62f3dd711ada049ee4d8160193ea7725cfa76c51009b",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Code/releases/download/v0.1.10/mimocode-linux-x64.tar.gz",
         "executable": {
           "path": "mimo",
           "archive_mode": "0755",
           "installer_mode": "0755",
-          "size": 129366144,
-          "sha256": "28072712719bc0aa1cae9f855edb1d0301e257736181179b2c8bcf851d483b5c"
+          "size": 129722496,
+          "sha256": "bb11a178635179e838c91a210b8e1c76ddf39443796b0be2cfc7f82fae540434"
         }
       }
     }
@@ -161,13 +161,13 @@
     "provider_env_disable_env": "MIMOCODE_DISABLE_PROVIDER_ENV",
     "manager_owned_runtime_flags": {
       "MIMOCODE_DISABLE_PROJECT_CONFIG": "Disables project mimocode.json/mimocode.jsonc discovery, project .mimocode directory discovery, and project AGENTS.md/CLAUDE.md instruction discovery. It does not suppress MIMOCODE_CONFIG_DIR or configured skills.paths loading.",
-      "MIMOCODE_DISABLE_CLAUDE_CODE": "Disables Claude Code prompt inheritance and Claude Code skills through the v0.1.9 master Claude compatibility flag.",
+      "MIMOCODE_DISABLE_CLAUDE_CODE": "Disables Claude Code prompt inheritance and Claude Code skills through the v0.1.10 master Claude compatibility flag.",
       "MIMOCODE_DISABLE_CLAUDE_CODE_COMMANDS": "Disables command discovery from ~/.claude/commands and project .claude/commands.",
       "MIMOCODE_DISABLE_CLAUDE_CODE_MCP": "Disables Claude Code MCP compatibility loading from .claude.json files.",
       "MIMOCODE_DISABLE_CLAUDE_IMPORT": "Disables best-effort Claude Code session import during process startup.",
-      "MIMOCODE_DISABLE_EXTERNAL_SKILLS": "Disables external .claude, .agents, .codex, and .opencode skill directory scans. Managed native skills under MIMOCODE_CONFIG_DIR and configured skills.paths still load in v0.1.9.",
-      "MIMOCODE_PURE": "Skips config-declared external server/TUI plugin origins. v0.1.9 still has separate internal TUI plugins and cwd .mimocode/tui scanning, so the manager also rejects known unmanaged project extension paths before launch.",
-      "MIMOCODE_ENABLE_ANALYSIS": "Defaults to enabled in v0.1.9; manager sets 0 for launch, installer, and staged version probes to avoid unrequested telemetry independently of share: disabled.",
+      "MIMOCODE_DISABLE_EXTERNAL_SKILLS": "Disables external .claude, .agents, .codex, and .opencode skill directory scans. Managed native skills under MIMOCODE_CONFIG_DIR and configured skills.paths still load in v0.1.10.",
+      "MIMOCODE_PURE": "Skips config-declared external server/TUI plugin origins. v0.1.10 still has separate internal TUI plugins and cwd .mimocode/tui scanning, so the manager also rejects known unmanaged project extension paths before launch.",
+      "MIMOCODE_ENABLE_ANALYSIS": "Defaults to enabled in v0.1.10; manager sets 0 for launch, installer, and staged version probes to avoid unrequested telemetry independently of share: disabled.",
       "MIMOCODE_DISABLE_AUTOUPDATE": "Disables automatic update checks for launch and staged probes.",
       "MIMOCODE_DISABLE_LSP_DOWNLOAD": "Disables runtime LSP downloads during launch and staged probes.",
       "MIMOCODE_DISABLE_MODELS_FETCH": "Disables remote model-list fetches during launch and staged probes.",
@@ -186,8 +186,8 @@
       ".codex/skills",
       ".opencode/skills"
     ],
-    "managed_config_dir_launch_closure": "MiMo Code v0.1.9 still loads managed MIMOCODE_CONFIG_DIR files and configured skills.paths after external skill disables, so the manager rejects unknown files under MIMOCODE_CONFIG_DIR before launch and allows only projected nddev-builder files.",
-    "mimo_only_default": "official docs and v0.1.9 source disagree; manager omits MIMOCODE_MIMO_ONLY to avoid forcing MiMo-only provider behavior",
+    "managed_config_dir_launch_closure": "MiMo Code v0.1.10 still loads managed MIMOCODE_CONFIG_DIR files and configured skills.paths after external skill disables, so the manager rejects unknown files under MIMOCODE_CONFIG_DIR before launch and allows only projected nddev-builder files.",
+    "mimo_only_default": "official docs and v0.1.10 source disagree; manager omits MIMOCODE_MIMO_ONLY to avoid forcing MiMo-only provider behavior",
     "instructions": {
       "preferred": "AGENTS.md",
       "compatibility": "CLAUDE.md",
@@ -225,15 +225,15 @@
     "https://mimo.xiaomi.com/mimocode/cli-options",
     "https://mimo.xiaomi.com/mimocode/mcp-servers",
     "https://mimo.xiaomi.com/mimocode/custom-tools",
-    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/flag/flag.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/config/config.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/config/paths.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/config/permission.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/skill/index.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/plugin/index.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/session/instruction.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/cli/cmd/tui/plugin/runtime.ts",
-    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.9/packages/opencode/src/index.ts"
+    "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.10",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/flag/flag.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/config/config.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/config/paths.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/config/permission.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/skill/index.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/plugin/index.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/session/instruction.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/cli/cmd/tui/plugin/runtime.ts",
+    "https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/v0.1.10/packages/opencode/src/index.ts"
   ]
 }

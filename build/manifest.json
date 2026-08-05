@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "name": "nddev-mimocode-app",
-  "build_version": "0.2.0",
+  "build_version": "0.2.1",
   "entrypoint": "python3 cli-tools/nddev_mimocode.py",
   "source_root": "setups",
   "setup_ids": [
@@ -42,7 +42,7 @@
   "runtime_compatibility": {
     "baseline_ref": "references/mimocode-baseline.json",
     "version_ref": "build/version.json",
-    "tested_version": "0.1.9",
+    "tested_version": "0.1.10",
     "official_repository": "XiaomiMiMo/MiMo-Code",
     "official_installer": "https://mimo.xiaomi.com/install",
     "official_installer_size": 15819,

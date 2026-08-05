@@ -36,8 +36,8 @@
   "runtime_compatibility": {
     "baseline_ref": "references/mimocode-baseline.json",
     "version_ref": "build/version.json",
-    "tested_version": "0.1.9",
-    "release_tag": "v0.1.9",
+    "tested_version": "0.1.10",
+    "release_tag": "v0.1.10",
     "official_repository": "XiaomiMiMo/MiMo-Code",
     "command": "mimo",
     "install_script": "https://mimo.xiaomi.com/install",
@@ -49,13 +49,13 @@
       "https://mimo.xiaomi.com/mimocode/skills",
       "https://mimo.xiaomi.com/mimocode/agents",
       "https://mimo.xiaomi.com/mimocode/cli-options",
-      "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.9"
+      "https://github.com/XiaomiMiMo/MiMo-Code/releases/tag/v0.1.10"
     ]
   },
   "builder_capability": {
     "projection": "mimocode-native-config-skills-agents-instructions",
     "source_root": "plugins/nddev-builder",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "native_paths_source": "cli-tools/nddev_mimocode.py:BUILDER_SOURCE_FILES",
     "default_on": true,
     "marketplace": null,
@@ -228,14 +228,14 @@
     "same_uid_recomputed_payload_digest_tamper_machine_capability": false
   },
   "software_install": {
-    "tested_version": "0.1.9",
+    "tested_version": "0.1.10",
     "source": "official XiaomiMiMo/MiMo-Code release assets with SHA-256 digests plus verified official installer in --binary mode",
     "official_installer": "https://mimo.xiaomi.com/install",
     "official_installer_size": 15819,
     "official_installer_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
     "installer_flags": [
       "--version",
-      "0.1.9",
+      "0.1.10",
       "--no-modify-path",
       "--binary",
       "<verified-binary>"
@@ -277,7 +277,7 @@
     "staged_probe_telemetry": "disabled by MIMOCODE_ENABLE_ANALYSIS=0",
     "layout": {
       "visible_command": "bin/mimo",
-      "version_tree": "software/versions/0.1.9/mimo",
+      "version_tree": "software/versions/0.1.10/mimo",
       "software_manifest": "software/mimocode.json"
     },
     "commands": {

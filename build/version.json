@@ -1,15 +1,15 @@
 {
   "schema_version": 2,
-  "build_version": "0.2.0",
+  "build_version": "0.2.1",
   "python_requires": ">=3.9",
-  "mimocode_tested": "0.1.9",
-  "mimocode_release_tag": "v0.1.9",
+  "mimocode_tested": "0.1.10",
+  "mimocode_release_tag": "v0.1.10",
   "command": "mimo",
   "official_repository": "XiaomiMiMo/MiMo-Code",
   "official_installer": "https://mimo.xiaomi.com/install",
   "official_installer_size": 15819,
   "official_installer_sha256": "2251667c8b12091a1e65744d892c8abfba008e621b22cf5d39338aa36c12efb2",
   "module_install_mechanism": "verified-official-release-asset-with-verified-official-binary-installer",
-  "nddev_builder_extension_version": "0.2.0",
+  "nddev_builder_extension_version": "0.2.1",
   "runtime_baseline_ref": "references/mimocode-baseline.json"
 }

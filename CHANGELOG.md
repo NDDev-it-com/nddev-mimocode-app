@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1] - 2026-08-05
+
+### Changed
+
+- Pin MiMo Code `v0.1.10` and refresh all supported release-archive and
+  extracted-executable identities for macOS and Ubuntu.
+- Revalidate the official installer, FDS latest marker, and isolated Linux x64
+  version probe without expanding the declared host surface.
+
 ## [0.2.0]
 
 - Replace setup variants with the `nddev-builder` content setup and
