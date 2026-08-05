@@ -59,7 +59,7 @@ PRIVATE_TEXT_MARKERS = (
     "nddev-" + "harnesses",
     ".ser" + "ena",
 )
-SHARED_WORKFLOW_PIN = "f6ea891f09653b8d449098817c8acfdb510731f6"
+SHARED_WORKFLOW_PIN = "2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
 
 
 def require(condition: bool, message: str, errors: list[str]) -> None:
